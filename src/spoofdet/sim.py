@@ -37,3 +37,13 @@ def simulate_trajectory(
 def gnss_fixes(rng, traj, gnss_std_m=1.5):
     """Noisy GNSS position fixes, one per trajectory sample, (n, 2) in m."""
     return traj.pos_m + rng.normal(0.0, gnss_std_m, size=traj.pos_m.shape)
+
+
+def wheel_speed(rng, traj, speed_std_mps=0.05):
+    """Wheel odometry speed |v| per sample, (n,) in m/s.
+
+    White Gaussian noise of `speed_std_mps` (assumed). Wheel slip and the
+    scale error from a wrong wheel radius are not modelled yet.
+    """
+    speed = np.linalg.norm(traj.vel_mps, axis=1)
+    return speed + rng.normal(0.0, speed_std_mps, size=speed.shape)
