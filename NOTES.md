@@ -29,3 +29,51 @@ With GNSS as the only sensor nothing in the filter disagrees with the
 spoofed track. This is the case the IMU or odometry cross-check has to
 cover: the attacker's implied velocity differs from what the wheels or the
 accelerometers say.
+
+## 2026-11-19
+
+Added wheel odometry as a speed measurement (|v| only, 0.05 m/s noise,
+assumed) to the filter, so the speed row is an EKF update linearised at
+the prediction.
+
+First version used the speed row whenever the predicted speed was over
+0.3 m/s. The false alarm rate before onset came out at 0.088 instead of
+0.010. Binning by time showed a start-up error, not a steady one: 0.27 of
+steps over the gate in 0-5 s, 0.50 in 5-10 s, 0.21 in 10-20 s, back to
+0.01 only after about 30 s. The filter starts with zero velocity and 5 m/s
+sd, so the heading is unknown, and the speed row linearised along a wrong
+heading makes the filter confident in a wrong velocity. Changed the
+condition to a heading check: use the speed row only once the largest
+velocity sd is under 0.2 times the predicted speed. The speed row then
+starts at about 2.5 s and the false alarm rate is 0.010 from 5 s on.
+
+Same data through both filters, drag-offs aimed along or across the true
+heading at onset, 200 seeds (`python experiments/odo_cross_check.py`):
+
+```
+attack                filter      before   0-2 s  2-60 s
+none                  gnss         0.010   0.006   0.010
+none                  gnss+odo     0.010   0.012   0.010
+jump 5 m              gnss         0.010   0.227   0.011
+jump 5 m              gnss+odo     0.010   0.499   0.082
+drag 1 m/s along      gnss         0.010   0.013   0.011
+drag 1 m/s along      gnss+odo     0.010   0.020   0.944
+drag 0.2 m/s along    gnss         0.010   0.006   0.010
+drag 0.2 m/s along    gnss+odo     0.010   0.012   0.276
+drag 1 m/s across     gnss         0.010   0.013   0.011
+drag 1 m/s across     gnss+odo     0.010   0.016   0.330
+drag 0.2 m/s across   gnss         0.010   0.006   0.010
+drag 0.2 m/s across   gnss+odo     0.010   0.012   0.012
+```
+
+The along-track drag is now seen: 1 m/s on 0.94 of steps, 0.2 m/s on
+0.28. Across the heading the attacker only changes the implied speed in
+second order: at about 2 m/s, 1 m/s across gives sqrt(5) - 2 = 0.24 m/s
+of extra speed (caught on 0.33 of steps), 0.2 m/s across gives 0.01 m/s
+(not caught). Speed alone cannot see a sideways pull. That needs a heading
+reference: yaw rate from the IMU gyro, or wheel speed per side.
+
+The 5 m jump also gets better (0.50 early instead of 0.23), and keeps
+tripping the gate on 0.08 of later steps. With the speed pinned, the filter
+can only move onto the new position slowly, so the innovations stay large
+for a while after the jump.
