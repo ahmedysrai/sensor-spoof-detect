@@ -2,12 +2,18 @@ import numpy as np
 import pytest
 
 from spoofdet.attacks import drag_off, jump
-from spoofdet.kf import run_gnss_filter, run_gnss_odo_filter
+from spoofdet.kf import (
+    fit_start_heading,
+    run_gnss_filter,
+    run_gnss_odo_filter,
+    run_gnss_odo_gyro_filter,
+)
 from spoofdet.nis import nis_threshold
-from spoofdet.sim import gnss_fixes, simulate_trajectory, wheel_speed
+from spoofdet.sim import gnss_fixes, gyro_yaw_rate, simulate_trajectory, wheel_speed
 
 DT_S, ACC_STD, GNSS_STD = 0.1, 0.2, 1.5
 SPEED_STD = 0.05
+GYRO_STD = 5.5e-4
 
 
 @pytest.fixture
@@ -86,3 +92,74 @@ def test_wheel_speed_exposes_drag_off_that_gnss_alone_misses(rng):
     late = slice(k0 + 100, None)  # from 10 s after onset
     assert np.mean(nis_g[late] > nis_threshold(2, 0.01)) < 0.05
     assert np.mean(nis_o[late] > nis_threshold(3, 0.01)) > 0.5
+
+
+def test_noise_free_gyro_integrates_to_the_heading(rng):
+    traj = simulate_trajectory(rng, 500, DT_S, ACC_STD)
+    rate = gyro_yaw_rate(rng, traj, 0.0)
+    psi = np.unwrap(np.arctan2(traj.vel_mps[:, 1], traj.vel_mps[:, 0]))
+    np.testing.assert_allclose(psi[0] + np.cumsum(rate * DT_S), psi, atol=1e-9)
+
+
+def test_start_heading_fit_is_exact_on_a_noise_free_turn():
+    # 5 s at 1.5 m/s while turning 0.4 rad/s: two radians of turn, where a
+    # straight-line fit to the fixes would be far off
+    n, speed, rate = 50, 1.5, 0.4
+    psi = 0.3 + rate * DT_S * np.arange(n)
+    step = speed * DT_S * np.column_stack([np.cos(psi), np.sin(psi)])
+    fixes = np.r_[np.zeros((1, 2)), np.cumsum(step[:-1], axis=0)] + (10.0, -4.0)
+    pos, psi_end, _, scale = fit_start_heading(
+        fixes, np.full(n, speed), np.r_[0.0, np.full(n - 1, rate)], DT_S, GNSS_STD
+    )
+    np.testing.assert_allclose(pos, fixes[-1], atol=1e-9)
+    assert psi_end == pytest.approx(psi[-1], abs=1e-9)
+    assert scale == pytest.approx(1.0, abs=1e-9)
+
+
+def gnss_odo_gyro(rng, n_steps, attack=None):
+    traj = simulate_trajectory(rng, n_steps, DT_S, ACC_STD)
+    speed = wheel_speed(rng, traj, SPEED_STD)
+    rate = gyro_yaw_rate(rng, traj, GYRO_STD)
+    z = gnss_fixes(rng, traj, GNSS_STD)
+    if attack is not None:
+        z = attack(z, traj)
+    return traj, z, speed, rate
+
+
+def test_mean_nis_of_matched_gnss_odo_gyro_filter_is_three(rng):
+    _, z, speed, rate = gnss_odo_gyro(rng, 5000)
+    _, nis_vals = run_gnss_odo_gyro_filter(
+        z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD
+    )
+    assert np.all(np.isnan(nis_vals[:50]))
+    # 4950 chi-square(3) values from 5 s on: standard error about 0.035
+    assert np.mean(nis_vals[50:]) == pytest.approx(3.0, abs=0.15)
+
+
+def test_gyro_exposes_sideways_drag_off_that_speed_alone_misses(rng):
+    k0 = 300
+
+    def sideways(z, traj):
+        v = traj.vel_mps[k0]
+        return drag_off(z, traj.t_s, 30.0, 1.0, (-v[1], v[0]))
+
+    _, z, speed, rate = gnss_odo_gyro(rng, 900, sideways)
+    _, nis_o = run_gnss_odo_filter(z, speed, DT_S, ACC_STD, GNSS_STD, SPEED_STD)
+    _, nis_y = run_gnss_odo_gyro_filter(
+        z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD
+    )
+    late = slice(k0 + 100, None)
+    gate = nis_threshold(3, 0.01)
+    assert np.mean(nis_o[late] > gate) < 0.5
+    assert np.mean(nis_y[late] > gate) > 0.5
+
+
+def test_gyro_filter_refuses_to_start_without_a_heading(rng):
+    traj = simulate_trajectory(rng, 100, DT_S, 0.0, vel0_mps=(0.1, 0.0))
+    z = gnss_fixes(rng, traj, GNSS_STD)
+    speed = wheel_speed(rng, traj, SPEED_STD)
+    rate = gyro_yaw_rate(rng, traj, GYRO_STD)
+    with pytest.raises(ValueError, match="not moved far enough"):
+        run_gnss_odo_gyro_filter(
+            z, speed, rate, DT_S, 0.0, GNSS_STD, SPEED_STD, GYRO_STD
+        )

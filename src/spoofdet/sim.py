@@ -47,3 +47,24 @@ def wheel_speed(rng, traj, speed_std_mps=0.05):
     """
     speed = np.linalg.norm(traj.vel_mps, axis=1)
     return speed + rng.normal(0.0, speed_std_mps, size=speed.shape)
+
+
+def gyro_yaw_rate(rng, traj, gyro_std_radps=5.5e-4):
+    """Gyro yaw rate per sample, (n,) in rad/s, counterclockwise positive.
+
+    The heading is the direction of the velocity (a wheeled vehicle with no
+    sideslip). Sample k is the mean rate over the step from k - 1 to k, so
+    heading[k] = heading[k - 1] + rate[k] * dt; sample 0 is zero.
+
+    The noise is white, `gyro_std_radps` per sample. The default is the
+    Bosch BMI088 gyro noise density, 0.014 deg/s/sqrt(Hz) typ. (datasheet
+    BST-BMI088-DS000-19, rev. 1.9, table 5), averaged over a 0.1 s sample:
+    0.014 * sqrt(1 / (2 * 0.1 s)) = 0.031 deg/s = 5.5e-4 rad/s. That reads
+    the density as one-sided, which matches the same table's 0.1 deg/s rms
+    in 47 Hz (0.014 * sqrt(47) = 0.096). The zero-rate offset (+-1 deg/s
+    typ. before calibration, same table) and its drift are not modelled yet.
+    """
+    psi = np.unwrap(np.arctan2(traj.vel_mps[:, 1], traj.vel_mps[:, 0]))
+    dt_s = traj.t_s[1] - traj.t_s[0]
+    rate = np.r_[0.0, np.diff(psi) / dt_s]
+    return rate + rng.normal(0.0, gyro_std_radps, size=rate.shape)

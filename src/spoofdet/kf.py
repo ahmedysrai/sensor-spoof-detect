@@ -1,8 +1,10 @@
-"""Constant-velocity Kalman filters with GNSS position updates, ENU frame.
+"""Kalman filters with GNSS position updates, ENU frame.
 
-State x = [east_m, north_m, ve_mps, vn_mps]. The usual tracking notation:
-F, Q for the model, H, R for the measurement, nu = z - h(x_pred) and
-S = H P_pred H^T + R for the innovation.
+The constant-velocity filters use x = [east_m, north_m, ve_mps, vn_mps].
+The gyro filter uses a unicycle state x = [east_m, north_m, psi_rad,
+speed_mps], with heading psi counterclockwise from east. The usual tracking
+notation: F, Q for the model, H, R for the measurement, nu = z - h(x_pred)
+and S = H P_pred H^T + R for the innovation.
 """
 
 import numpy as np
@@ -98,5 +100,116 @@ def run_gnss_odo_filter(
             H = np.vstack([H_gnss, np.r_[0.0, 0.0, x[2:] / speed_pred]])
             nu = np.r_[fixes_m[k] - x[:2], speed_mps[k] - speed_pred]
             x, P, nis_vals[k] = _update(x, P, nu, H, R)
+        xs[k] = x
+    return xs, nis_vals
+
+
+def unicycle_predict(x, P, yaw_rate_radps, dt_s, accel_std_mps2, gyro_std_radps):
+    """Propagate the unicycle state over one step with the gyro as input.
+
+    The heading turns by the measured yaw rate, so gyro noise is process
+    noise on psi; white along-track acceleration is process noise on the
+    speed. The vehicle moves along its heading (no sideslip), which is what
+    lets the gyro hold the direction of travel against the GNSS fixes.
+    """
+    e, n, psi, s = x
+    c, sn = np.cos(psi), np.sin(psi)
+    x = np.array([e + s * dt_s * c, n + s * dt_s * sn, psi + yaw_rate_radps * dt_s, s])
+    F = np.eye(4)
+    F[0, 2], F[0, 3] = -s * dt_s * sn, dt_s * c
+    F[1, 2], F[1, 3] = s * dt_s * c, dt_s * sn
+    # noise inputs [along-track accel, gyro noise]
+    G = np.array(
+        [[0.5 * dt_s**2 * c, 0.0], [0.5 * dt_s**2 * sn, 0.0], [0.0, dt_s], [dt_s, 0.0]]
+    )
+    Q = G @ np.diag([accel_std_mps2**2, gyro_std_radps**2]) @ G.T
+    return x, F @ P @ F.T + Q
+
+
+def fit_start_heading(fixes_m, speed_mps, yaw_rate_radps, dt_s, gnss_std_m):
+    """Position and heading at the last of `fixes_m`, from dead reckoning.
+
+    Wheel speed and gyro give the path over the window up to a rotation by
+    the unknown final heading psi. With c = cos(psi), s = sin(psi) each fix
+    is linear in (east, north, c, s), so one least-squares solve gives them,
+    and turns inside the window cost nothing, which a straight-line fit to
+    the fixes would not allow. Returns pos_m (2,), psi_rad, its variance
+    and |(c, s)|, which should be close to 1 if the wheel speed scale is
+    right.
+    """
+    n = len(fixes_m)
+    # heading of each step relative to the final heading, and the
+    # dead-reckoned position of each fix relative to the final fix
+    rel_psi = -np.r_[np.cumsum((yaw_rate_radps[1:] * dt_s)[::-1])[::-1], 0.0]
+    step = (
+        speed_mps[:-1, None]
+        * dt_s
+        * np.column_stack([np.cos(rel_psi[:-1]), np.sin(rel_psi[:-1])])
+    )
+    d = -np.r_[np.cumsum(step[::-1], axis=0)[::-1], np.zeros((1, 2))]
+    A = np.zeros((2 * n, 4))
+    A[0::2] = np.column_stack([np.ones(n), np.zeros(n), d[:, 0], -d[:, 1]])
+    A[1::2] = np.column_stack([np.zeros(n), np.ones(n), d[:, 1], d[:, 0]])
+    coef, *_ = np.linalg.lstsq(A, fixes_m.reshape(-1), rcond=None)
+    cov = gnss_std_m**2 * np.linalg.inv(A.T @ A)
+    c, sn = coef[2:]
+    scale = np.hypot(c, sn)
+    # heading variance: (c, s) covariance projected across (c, s)
+    u = np.array([-sn, c]) / scale
+    psi_var = u @ cov[2:, 2:] @ u / scale**2
+    return coef[:2], float(np.arctan2(sn, c)), float(psi_var), float(scale)
+
+
+def run_gnss_odo_gyro_filter(
+    fixes_m,
+    speed_mps,
+    yaw_rate_radps,
+    dt_s,
+    accel_std_mps2,
+    gnss_std_m,
+    speed_std_mps,
+    gyro_std_radps,
+    n_init=50,
+    max_heading_std_rad=0.2,
+):
+    """GNSS, wheel speed and gyro yaw rate in a unicycle EKF.
+
+    z = [east_m, north_m, speed_mps] is linear in this state, so only the
+    prediction is linearised. The heading has to come from somewhere at the
+    start: fit_start_heading over the first `n_init` samples gives position
+    and heading at sample n_init - 1, where the filter starts. NIS is NaN up
+    to there and 3-dof after it. Once started, the heading is carried by the
+    gyro, so unlike run_gnss_odo_filter this needs no heading check. Raises
+    ValueError if the start heading sd is over `max_heading_std_rad`, which
+    happens when the vehicle barely moves in the start window.
+    """
+    n = len(fixes_m)
+    k0 = n_init - 1
+    pos0, psi0, psi_var, _ = fit_start_heading(
+        fixes_m[:n_init], speed_mps[:n_init], yaw_rate_radps[:n_init], dt_s, gnss_std_m
+    )
+    if psi_var > max_heading_std_rad**2:
+        raise ValueError(
+            f"start heading sd is {np.sqrt(psi_var):.2f} rad after {n_init} "
+            "samples; the vehicle has not moved far enough to fit a heading"
+        )
+    x = np.array([pos0[0], pos0[1], psi0, speed_mps[k0]])
+    # position variance: about the fix noise averaged over the window. The
+    # exact value matters little, the first GNSS updates settle it.
+    P = np.diag([gnss_std_m**2, gnss_std_m**2, psi_var, speed_std_mps**2])
+
+    H = np.zeros((3, 4))
+    H[0, 0] = H[1, 1] = H[2, 3] = 1.0
+    R = np.diag([gnss_std_m**2, gnss_std_m**2, speed_std_mps**2])
+
+    xs = np.full((n, 4), np.nan)
+    nis_vals = np.full(n, np.nan)
+    xs[k0] = x
+    for k in range(k0 + 1, n):
+        x, P = unicycle_predict(
+            x, P, yaw_rate_radps[k], dt_s, accel_std_mps2, gyro_std_radps
+        )
+        nu = np.r_[fixes_m[k], speed_mps[k]] - H @ x
+        x, P, nis_vals[k] = _update(x, P, nu, H, R)
         xs[k] = x
     return xs, nis_vals
