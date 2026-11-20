@@ -77,3 +77,49 @@ The 5 m jump also gets better (0.50 early instead of 0.23), and keeps
 tripping the gate on 0.08 of later steps. With the speed pinned, the filter
 can only move onto the new position slowly, so the innovations stay large
 for a while after the jump.
+
+## 2026-11-20
+
+Added the gyro yaw rate and a second filter with a unicycle state
+[e, n, heading, speed]: the gyro turns the heading in the prediction, the
+vehicle moves along its heading, and GNSS plus wheel speed are the
+measurement. Gyro noise is the BMI088 noise density, 0.014 deg/s/sqrt(Hz)
+(datasheet rev. 1.9, table 5), averaged over a 0.1 s sample: 5.5e-4 rad/s.
+No gyro bias yet.
+
+The start heading first came from a straight-line fit to the first 2 s of
+fixes. On one of the 200 seeds the fitted speed came out at 0.41 m/s
+(true speed about 2 m/s, fit sd 0.58 m/s per axis), too low to give a
+heading, and the filter refused to start. A longer straight-line fit
+would be biased by the turns inside it, so the start now dead-reckons the
+first 5 s from wheel speed and gyro and fits only the final heading and
+position to the fixes, which is linear in (e, n, cos, sin).
+
+Same data as before, gyro drawn last so the other sensors match the
+2026-11-19 run seed for seed (the gnss and gnss+odo rows reproduce it),
+plus a column for the last 10 s (`python experiments/odo_cross_check.py`):
+
+```
+attack                filter      before   0-2 s  2-60 s  50-60 s
+none                  +gyro        0.010   0.011   0.010    0.010
+jump 5 m              +gyro        0.010   0.551   0.099    0.015
+drag 1 m/s along      +gyro        0.010   0.022   0.946    1.000
+drag 0.2 m/s along    +gyro        0.010   0.012   0.317    0.614
+drag 1 m/s across     gnss+odo     0.010   0.016   0.330    0.571
+drag 1 m/s across     +gyro        0.010   0.022   0.933    0.996
+drag 0.2 m/s across   gnss+odo     0.010   0.012   0.012    0.015
+drag 0.2 m/s across   +gyro        0.010   0.012   0.077    0.098
+```
+
+The gyro filter keeps the 0.010 false alarm rate. The 1 m/s sideways pull
+goes from 0.33 to 0.93 of steps. The 0.2 m/s sideways pull is still mostly
+missed: 0.077 of steps, about eight times the false alarm rate but nowhere
+near a usable alarm per step.
+
+The reason is that the gyro measures the change of heading, not the
+heading. A constant sideways drag looks to this filter like a heading
+error of 0.2 / 2 = 0.1 rad, and the GNSS updates slowly turn the heading
+estimate towards it, at a rate set by how little gyro noise the filter
+assumes. Each step's innovation stays small, but they all lean the same
+way, which is what CUSUM on the innovations should pick up. That is the
+next step.
