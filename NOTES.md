@@ -123,3 +123,60 @@ estimate towards it, at a rate set by how little gyro noise the filter
 assumes. Each step's innovation stays small, but they all lean the same
 way, which is what CUSUM on the innovations should pick up. That is the
 next step.
+
+## 2026-11-21
+
+CUSUM on the innovations. The gyro filter now also returns its innovations
+in the track frame (along and across the predicted heading, plus speed),
+each divided by its sd from S. A scratch run over 40 seeds first checked
+what the 0.2 m/s sideways drag does to them: before onset the across
+column has mean 0.00 and sd 1.00 with lag-1 autocorrelation 0.002, so the
+samples are close to white N(0, 1). After onset its mean is 0.64 in 2-10 s,
+1.35 in 10-30 s and 1.49 in 30-60 s, while the along and speed columns stay
+near zero. So the lean grows for the whole minute instead of fading as the
+heading follows the spoof. One standard deviation of lean on one of three
+dof raises the mean NIS from 3 to only about 4, which is why the per-step
+gate missed it.
+
+Two-sided CUSUM per column, drift 0.5. For the threshold I ran the CUSUM
+on white N(0, 1) samples, 3 columns, 4 million steps (111 h at 10 Hz):
+threshold 10 gave 1.42 alarms per hour, 10.5 gave 0.83, 11 gave 0.50.
+Kept 10.5, about one an hour. The NIS gate it is compared with is set for
+the same budget, a per-step P_fa of 1/36000.
+
+`python experiments/cusum_vs_gate.py`, same 200 seeds as before, gyro
+filter only (found: fraction of seeds with an alarm within 60 s of onset;
+delay: median time to the first alarm at or after onset):
+
+```
+attack                detector    FA/h  found  delay s
+none                  nis gate     0.9
+none                  cusum        0.8
+jump 5 m              nis gate           0.99      0.6
+jump 5 m              cusum              1.00      0.3
+drag 1 m/s along      nis gate           1.00      5.3
+drag 1 m/s along      cusum              1.00      2.4
+drag 0.2 m/s along    nis gate           1.00     26.8
+drag 0.2 m/s along    cusum              1.00      7.4
+drag 1 m/s across     nis gate           1.00      5.7
+drag 1 m/s across     cusum              1.00      2.4
+drag 0.2 m/s across   nis gate           0.54     38.2
+drag 0.2 m/s across   cusum              1.00      8.0
+```
+
+The 0.2 m/s sideways drag, the case the gyro filter could not see per
+step, is now found on every seed after a median 8.0 s, when the fixes are
+pulled 1.6 m off, about one GNSS sd. The NIS gate at the same false alarm
+rate finds it on 0.54 of seeds after 38 s. CUSUM is two to four times
+faster on every drag-off.
+
+The false alarm rates rest on only 6.4 h of attack-free runs (five or six
+alarms each), so they only show that the filter innovations do not alarm
+much more often than white noise does. A false alarm in the first 60 s
+after onset would also count as found, under a 2 % chance per seed at
+one an hour.
+
+An attacker who knows the detector can still stay under it. With a lean
+below the 0.5 drift the statistic still drifts down on average and alarms
+stay rare. If the lean scales linearly with the drag rate (1.49 at
+0.2 m/s), that is a sideways drag under about 0.07 m/s. Not tried yet.

@@ -7,8 +7,9 @@ The project is simulation based. So far it has a planar vehicle simulator
 with GNSS fixes, two GNSS spoofing profiles (a position jump and a slow
 drag-off), wheel odometry speed, a gyro yaw rate with the Bosch BMI088
 noise density, a constant-velocity Kalman filter (an EKF once the speed is
-fused), a unicycle EKF that lets the gyro carry the heading, and a per-step
-normalised innovation squared (NIS) gate.
+fused), a unicycle EKF that lets the gyro carry the heading, a per-step
+normalised innovation squared (NIS) gate and a two-sided CUSUM on the
+innovations.
 
 With GNSS as the only sensor the gate catches a 15 m jump within about 2 s
 but misses a 1 m/s drag-off completely, even after it has pulled the track
@@ -17,8 +18,12 @@ of travel (the gate trips on 94 % of steps after the first 2 s), but not a
 pull sideways, because speed says nothing about heading. With the gyro a
 1 m/s sideways pull trips the gate on 93 % of steps. A 0.2 m/s sideways
 pull still trips it on only 8 %: the gyro measures turns, not heading, so
-the filter's heading slowly follows the spoofed track. NOTES.md has the
-numbers and the reasons.
+the filter's heading slowly follows the spoofed track. The innovations
+stay small but lean to one side, and a CUSUM on them adds that up: at
+about one false alarm an hour it finds the 0.2 m/s sideways pull on every
+run after a median 8 s, where a NIS gate with the same false alarm rate
+finds it on 54 % of runs after 38 s. NOTES.md has the numbers and the
+reasons.
 
 ## Run it
 
@@ -27,4 +32,5 @@ pip install -e ".[dev]"
 pytest
 python experiments/crude_gnss_gate.py   # about 35 s
 python experiments/odo_cross_check.py   # about 150 s
+python experiments/cusum_vs_gate.py     # about 140 s
 ```
