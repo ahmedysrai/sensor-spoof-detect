@@ -128,7 +128,7 @@ def gnss_odo_gyro(rng, n_steps, attack=None):
 
 def test_mean_nis_of_matched_gnss_odo_gyro_filter_is_three(rng):
     _, z, speed, rate = gnss_odo_gyro(rng, 5000)
-    _, nis_vals = run_gnss_odo_gyro_filter(
+    _, nis_vals, _ = run_gnss_odo_gyro_filter(
         z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD
     )
     assert np.all(np.isnan(nis_vals[:50]))
@@ -145,7 +145,7 @@ def test_gyro_exposes_sideways_drag_off_that_speed_alone_misses(rng):
 
     _, z, speed, rate = gnss_odo_gyro(rng, 900, sideways)
     _, nis_o = run_gnss_odo_filter(z, speed, DT_S, ACC_STD, GNSS_STD, SPEED_STD)
-    _, nis_y = run_gnss_odo_gyro_filter(
+    _, nis_y, _ = run_gnss_odo_gyro_filter(
         z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD
     )
     late = slice(k0 + 100, None)
@@ -163,3 +163,31 @@ def test_gyro_filter_refuses_to_start_without_a_heading(rng):
         run_gnss_odo_gyro_filter(
             z, speed, rate, DT_S, 0.0, GNSS_STD, SPEED_STD, GYRO_STD
         )
+
+
+def test_track_frame_innovations_are_standard_normal_when_matched(rng):
+    _, z, speed, rate = gnss_odo_gyro(rng, 5000)
+    _, _, y = run_gnss_odo_gyro_filter(
+        z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD
+    )
+    assert np.all(np.isnan(y[:50]))
+    # 4950 samples per column: standard error of the mean about 0.014
+    np.testing.assert_allclose(np.mean(y[50:], axis=0), 0.0, atol=0.06)
+    np.testing.assert_allclose(np.std(y[50:], axis=0), 1.0, atol=0.06)
+
+
+def test_sideways_drag_off_leans_the_across_track_innovation(rng):
+    k0 = 300
+
+    def left(z, traj):
+        v = traj.vel_mps[k0]
+        return drag_off(z, traj.t_s, 30.0, 0.2, (-v[1], v[0]))
+
+    _, z, speed, rate = gnss_odo_gyro(rng, 900, left)
+    _, _, y = run_gnss_odo_gyro_filter(
+        z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD
+    )
+    late = slice(k0 + 100, None)
+    # fixes pulled to the left of travel give positive across-track values
+    assert np.mean(y[late, 1]) > 0.5
+    assert abs(np.mean(y[late, 0])) < 0.3

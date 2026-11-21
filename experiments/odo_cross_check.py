@@ -87,7 +87,7 @@ def main():
             _, nis_o = run_gnss_odo_filter(
                 z, speed, DT_S, ACC_STD_MPS2, GNSS_STD_M, SPEED_STD_MPS
             )
-            _, nis_y = run_gnss_odo_gyro_filter(
+            _, nis_y, _ = run_gnss_odo_gyro_filter(
                 z,
                 speed,
                 rate,

@@ -182,6 +182,13 @@ def run_gnss_odo_gyro_filter(
     gyro, so unlike run_gnss_odo_filter this needs no heading check. Raises
     ValueError if the start heading sd is over `max_heading_std_rad`, which
     happens when the vehicle barely moves in the start window.
+
+    Returns the state track, the NIS per step and the innovations in the
+    track frame, (n, 3): position along and across the predicted heading
+    (across positive to the left) and speed, each divided by its standard
+    deviation from S, so they are N(0, 1) when the filter matches the data.
+    They are for the CUSUM in spoofdet.cusum, which needs a signed value per
+    direction. The correlation between the three is ignored there.
     """
     n = len(fixes_m)
     k0 = n_init - 1
@@ -204,12 +211,17 @@ def run_gnss_odo_gyro_filter(
 
     xs = np.full((n, 4), np.nan)
     nis_vals = np.full(n, np.nan)
+    nu_track = np.full((n, 3), np.nan)
     xs[k0] = x
     for k in range(k0 + 1, n):
         x, P = unicycle_predict(
             x, P, yaw_rate_radps[k], dt_s, accel_std_mps2, gyro_std_radps
         )
         nu = np.r_[fixes_m[k], speed_mps[k]] - H @ x
+        c, sn = np.cos(x[2]), np.sin(x[2])
+        T = np.array([[c, sn, 0.0], [-sn, c, 0.0], [0.0, 0.0, 1.0]])
+        S_track = T @ (H @ P @ H.T + R) @ T.T
+        nu_track[k] = T @ nu / np.sqrt(np.diag(S_track))
         x, P, nis_vals[k] = _update(x, P, nu, H, R)
         xs[k] = x
-    return xs, nis_vals
+    return xs, nis_vals, nu_track
