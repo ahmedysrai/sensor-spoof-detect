@@ -22,8 +22,11 @@ the filter's heading slowly follows the spoofed track. The innovations
 stay small but lean to one side, and a CUSUM on them adds that up: at
 about one false alarm an hour it finds the 0.2 m/s sideways pull on every
 run after a median 8 s, where a NIS gate with the same false alarm rate
-finds it on 54 % of runs after 38 s. NOTES.md has the numbers and the
-reasons.
+finds it on 54 % of runs after 38 s. An attacker who pulls more slowly
+still gets through: at 0.02 m/s sideways the fixes end 11 m off after
+9 minutes on most runs with no alarm, because the filter's heading turns
+onto the spoofed track within a few minutes and the lean goes away.
+NOTES.md has the numbers and the reasons.
 
 ## Run it
 
@@ -33,4 +36,5 @@ pytest
 python experiments/crude_gnss_gate.py   # about 35 s
 python experiments/odo_cross_check.py   # about 150 s
 python experiments/cusum_vs_gate.py     # about 140 s
+python experiments/slow_drag.py         # about 4 min
 ```

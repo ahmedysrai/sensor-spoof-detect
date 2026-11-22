@@ -180,3 +180,63 @@ An attacker who knows the detector can still stay under it. With a lean
 below the 0.5 drift the statistic still drifts down on average and alarms
 stay rare. If the lean scales linearly with the drag rate (1.49 at
 0.2 m/s), that is a sideways drag under about 0.07 m/s. Not tried yet.
+
+## 2026-11-22
+
+Tried the attacker from the last entry, who pulls slowly sideways to stay
+under the CUSUM drift. First a scratch run with the old fixed-direction
+drag over 600 s: the across-track lean changed sign late in the run,
+because the vehicle turns over ten minutes and a drag set across the
+track at onset ends up partly along it. So the attack now follows the
+route (attacks.drag_across_track): each step pulls to the left of the
+true velocity.
+
+`python experiments/slow_drag.py` (600 s at 10 Hz, attack from 60 s, 100
+seeds, about 4 min; found: an alarm at any time before the end of the run;
+delay and offset are medians at the first alarm; lean is the mean
+across-track innovation):
+
+```
+rate m/s  detector   FA/h  found  delay s  offset m  lean 0-60 s  lean later
+    none  nis gate    1.1                                   0.01        0.00
+    none  cusum       0.5                                   0.01        0.00
+    0.02  nis gate          0.15    265.8       5.3         0.14        0.02
+    0.02  cusum             0.21     89.6       1.8         0.14        0.02
+    0.05  nis gate          0.16    269.2      13.5         0.34        0.04
+    0.05  cusum             0.84     35.0       1.8         0.34        0.04
+    0.10  nis gate          0.26    265.4      26.5         0.67        0.08
+    0.10  cusum             1.00     15.6       1.6         0.67        0.08
+    0.20  nis gate          0.81     46.2       9.2         1.34        0.16
+    0.20  cusum             1.00      7.6       1.5         1.34        0.16
+```
+
+The lean in the first minute does scale linearly with the rate, about 6.7
+per m/s, which puts the 0.5 drift at about 0.075 m/s, close to the guess
+from the 11-21 run. But 0.05 m/s is still found on 84 % of seeds, because
+the lean is not steady: it only lasts about a minute and then falls to a
+tenth of that. Whenever the CUSUM finds the drag, it is when the fixes are
+1.5 to 1.8 m off, about one GNSS sd.
+
+Why the lean fades: a sideways pull at a constant rate makes the spoofed
+track run at a constant angle atan(rate / speed) to the true one. The gyro
+only measures turns, so the GNSS updates rotate the filter's heading onto
+the spoofed track and the innovations go back to zero mean. A scratch
+check on five seeds at 0.2 m/s: the filter's heading error is under 0.5
+deg 10 s after onset and ends within about 1 deg of atan(0.2 / speed)
+(3.87 deg against 3.87 on seed 0, 2.56 against 2.50 on seed 4).
+
+So the attacker does not need to stay under the drift forever, only for
+the first minute or so. At 0.02 m/s the CUSUM finds 0.21 of seeds, and at
+0.5 false alarms an hour about 0.07 of seeds would alarm in 540 s anyway,
+so most of those are probably false alarms. The rest end 10.8 m off after
+9 minutes with nothing seen, and the pull can go on. Ramping the rate up
+slowly would probably let the attacker go faster still; not tried.
+
+The NIS gate is no use here: its late alarms (median 265 s) at the low
+rates are about what its 1.1/h false alarm rate gives over 540 s.
+
+The gap is the heading. Something that measures heading itself and not
+its change (a magnetometer, a second GNSS antenna) or a map of the route
+would see the constant angle. The +-1 deg/s gyro zero-rate offset, still
+not modelled, works the other way: it is a heading drift of the same kind
+the attacker is hiding in.
