@@ -6,7 +6,7 @@ sensors against each other in a Kalman filter.
 The project is simulation based. So far it has a planar vehicle simulator
 with GNSS fixes, two GNSS spoofing profiles (a position jump and a slow
 drag-off), wheel odometry speed, a gyro yaw rate with the Bosch BMI088
-noise density, a constant-velocity Kalman filter (an EKF once the speed is
+noise density and zero-rate offset, a constant-velocity Kalman filter (an EKF once the speed is
 fused), a unicycle EKF that lets the gyro carry the heading, a per-step
 normalised innovation squared (NIS) gate and a two-sided CUSUM on the
 innovations.
@@ -26,7 +26,13 @@ finds it on 54 % of runs after 38 s. An attacker who pulls more slowly
 still gets through: at 0.02 m/s sideways the fixes end 11 m off after
 9 minutes on most runs with no alarm, because the filter's heading turns
 onto the spoofed track within a few minutes and the lean goes away.
-NOTES.md has the numbers and the reasons.
+A real gyro makes this worse. The BMI088's 1 deg/s zero-rate offset makes
+the plain filter's CUSUM alarm on most steps, so the filter now estimates
+the offset as a fifth state. That brings clean-run false alarms back to
+0.4/h, but the offset estimate is one more way for the filter's heading to
+turn onto the spoofed track: with a random walk on the offset for
+temperature drift, a 0.1 m/s sideways pull is found on 22 % of runs,
+against all of them before. NOTES.md has the numbers and the reasons.
 
 ## Run it
 
@@ -37,4 +43,5 @@ python experiments/crude_gnss_gate.py   # about 35 s
 python experiments/odo_cross_check.py   # about 150 s
 python experiments/cusum_vs_gate.py     # about 140 s
 python experiments/slow_drag.py         # about 4 min
+python experiments/gyro_offset.py       # about 12 min
 ```

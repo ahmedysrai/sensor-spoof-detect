@@ -240,3 +240,66 @@ its change (a magnetometer, a second GNSS antenna) or a map of the route
 would see the constant angle. The +-1 deg/s gyro zero-rate offset, still
 not modelled, works the other way: it is a heading drift of the same kind
 the attacker is hiding in.
+
+## 2026-11-23
+
+Gyro zero-rate offset. The BMI088 datasheet (BST-BMI088-DS000-19 rev. 1.9,
+table 5) gives +-1 deg/s typ. with offset cancellation off, and +-0.015
+deg/s per K over temperature. The simulator now takes a constant offset,
+and run_gnss_odo_gyro_filter can carry it as a fifth state
+(bias_std_radps, bias_rw_radps).
+
+Scratch check first, 20 seeds, 600 s clean: with 1 deg/s in the data the
+four-state filter's CUSUM alarms about 32000 times an hour, nearly every
+step. The heading runs off at 1 deg/s and the fixes keep pulling it back,
+so the across-track innovation leans all the time. With the offset state
+false alarms go back to 0.3/h.
+
+The start fit dead-reckons with the raw rates, so the fitted start heading
+is off by b * T / 2 (T = 4.9 s window, checked on a noise-free straight
+run). I put that in the start covariance with its correlation to the
+offset. Over 200 runs of 10 s with a 1 deg/s offset, the estimate is still
+short by 0.57 of the offset on average with the correlation, 0.72 without
+it, and 0.97 with its sign the wrong way round (I had the sign as a switch
+in a scratch run to check the derivation).
+
+Then the slow-drag runs again (experiments/gyro_offset.py, 100 seeds,
+600 s, track-following drag from 60 s, CUSUM 0.5 / 10.5). The walk value
+1.1e-4 rad/s per sqrt(s) is an assumption: 10 K in 10 min at 0.015 deg/s
+per K. The simulated offset does not drift.
+
+```
+filter               rate m/s    FA/h  found  delay s  b err 60 s  b err end  (deg/s)
+4 states, no offset      none     0.5
+4 states, no offset      0.05           0.84     35.0
+4 states, no offset      0.10           1.00     15.6
+4 states, no offset      0.20           1.00      7.6
+4 states                 none 32462.1
+5 states, no walk        none     0.4                       0.011     0.0003
+5 states, no walk        0.05           0.68    141.6
+5 states, no walk        0.10           1.00     79.5
+5 states, no walk        0.20           1.00     12.0
+5 states, walk           none     0.4                       0.012     0.0099
+5 states, walk           0.05           0.11    104.7
+5 states, walk           0.10           0.22    190.8
+5 states, walk           0.20           0.88     14.4
+```
+
+The offset state hurts detection. A sideways drag needs the filter's
+heading to turn by atan(rate / speed) to follow the spoofed track (notes
+11-22). Without an offset state only the GNSS updates on psi can do that.
+With one, the filter can also explain the turn as a change in the offset.
+Scratch check on 5 seeds at 0.1 m/s: the offset estimate moves by -0.04
+to -0.11 deg/s in the first 30 s of the attack compared with the same
+seed run clean, which turns the heading left by a degree or two over that
+time, towards the drag. With no walk the offset variance keeps shrinking,
+so the estimate settles back and the drag is still found, only later
+(15.6 s -> 79.5 s at 0.1 m/s). With the walk the offset stays free to move
+and 0.1 m/s gets through on 78 % of runs.
+
+So the walk value matters a lot and I have no measurement behind mine.
+The attack here starts at 60 s, when the offset is known to 0.011 deg/s;
+a later start with no walk would probably look like the four-state case,
+not tried. Temperature (or a model of offset against temperature) as an
+input would let the walk be much smaller. A heading reference
+(magnetometer) is still the real fix for both problems.
