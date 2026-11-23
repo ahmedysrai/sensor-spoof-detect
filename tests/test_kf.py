@@ -191,3 +191,70 @@ def test_sideways_drag_off_leans_the_across_track_innovation(rng):
     # fixes pulled to the left of travel give positive across-track values
     assert np.mean(y[late, 1]) > 0.5
     assert abs(np.mean(y[late, 0])) < 0.3
+
+
+def test_gyro_offset_is_added_to_every_sample():
+    traj = simulate_trajectory(np.random.default_rng(1), 200, DT_S, ACC_STD)
+    rate0 = gyro_yaw_rate(np.random.default_rng(2), traj, GYRO_STD)
+    rate1 = gyro_yaw_rate(np.random.default_rng(2), traj, GYRO_STD, bias_radps=0.02)
+    np.testing.assert_allclose(rate1 - rate0, 0.02, atol=1e-12)
+
+
+def test_start_fit_heading_is_off_by_half_the_window_offset():
+    # straight noise-free run with a gyro reading a constant offset b: the
+    # dead-reckoned path curves, and the fitted final heading lands near the
+    # mid-window heading, b * T / 2 off. The filter's start covariance
+    # assumes this.
+    n, speed, psi, b = 50, 1.5, 0.3, 0.017
+    fixes = speed * DT_S * np.arange(n)[:, None] * [np.cos(psi), np.sin(psi)]
+    _, psi_end, _, _ = fit_start_heading(
+        fixes, np.full(n, speed), np.full(n, b), DT_S, GNSS_STD
+    )
+    assert psi_end - psi == pytest.approx(b * (n - 1) * DT_S / 2, rel=0.05)
+
+
+def test_offset_state_learns_a_one_degree_per_second_offset(rng):
+    b = np.deg2rad(1.0)
+    traj = simulate_trajectory(rng, 3000, DT_S, ACC_STD)
+    speed = wheel_speed(rng, traj, SPEED_STD)
+    rate = gyro_yaw_rate(rng, traj, GYRO_STD, bias_radps=b)
+    z = gnss_fixes(rng, traj, GNSS_STD)
+    args = (z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD)
+    _, _, y4 = run_gnss_odo_gyro_filter(*args)
+    xs, nis_vals, y5 = run_gnss_odo_gyro_filter(*args, bias_std_radps=b)
+    late = slice(1200, None)  # from 120 s
+    # without the state the heading runs off at 1 deg/s and the GNSS fixes
+    # keep pulling it back, so across-track innovations lean hard
+    assert abs(np.mean(y4[late, 1])) > 1.0
+    assert abs(np.mean(y5[late, 1])) < 0.1
+    assert np.mean(nis_vals[late]) == pytest.approx(3.0, abs=0.2)
+    assert xs[-1, 4] == pytest.approx(b, abs=np.deg2rad(0.02))
+
+
+def test_start_correlation_lets_the_first_fixes_correct_the_offset():
+    # The start heading is off by b * T / 2 for an unknown offset b, so the
+    # first fixes that show the heading error say something about b too.
+    # 10 s in, the estimate of a 1 deg/s offset is still short by about
+    # 0.57 of it on average over 200 short runs; 0.72 with no start
+    # correlation and 0.97 with its sign flipped (scratch runs).
+    b = np.deg2rad(1.0)
+    err = []
+    for seed in range(200):
+        rng = np.random.default_rng(100 + seed)
+        traj = simulate_trajectory(rng, 100, DT_S, ACC_STD)
+        speed = wheel_speed(rng, traj, SPEED_STD)
+        rate = gyro_yaw_rate(rng, traj, GYRO_STD, bias_radps=b)
+        z = gnss_fixes(rng, traj, GNSS_STD)
+        xs, _, _ = run_gnss_odo_gyro_filter(
+            z,
+            speed,
+            rate,
+            DT_S,
+            ACC_STD,
+            GNSS_STD,
+            SPEED_STD,
+            GYRO_STD,
+            bias_std_radps=b,
+        )
+        err.append(xs[-1, 4] - b)
+    assert np.mean(err) / b > -0.65
