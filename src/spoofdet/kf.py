@@ -13,6 +13,38 @@ import numpy as np
 from spoofdet.nis import nis
 
 
+def _check_lengths(source: str, **arrays) -> int:
+    """Return the number of samples, refusing arrays that disagree on it."""
+    lengths = {name: len(value) for name, value in arrays.items() if value is not None}
+    n = lengths.pop("fixes_m", None)
+    if n is None:
+        raise ValueError("fixes_m is required")
+    wrong = {name: length for name, length in lengths.items() if length != n}
+    if wrong:
+        detail = ", ".join(f"{name} has {length}" for name, length in wrong.items())
+        raise ValueError(
+            f"{source}: {n} GNSS fixes but {detail}; the filters need one value per sample"
+        )
+    return n
+
+
+def _non_negative(name: str, value, source: str) -> float:
+    """Process-noise sds may be zero (a noise-free run), measurement ones not."""
+    value = float(value)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(f"{source}: {name} must be zero or positive, got {value}")
+    return value
+
+
+def _positive(name: str, value, source: str) -> float:
+    if value is None:
+        raise ValueError(f"{source}: {name} is None; the filters need a positive sd")
+    value = float(value)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{source}: {name} must be positive, got {value}")
+    return value
+
+
 def cv_model(dt_s, accel_std_mps2):
     """F and Q for white acceleration held constant over each step."""
     F = np.eye(4)
@@ -37,13 +69,24 @@ def run_gnss_filter(fixes_m, dt_s, accel_std_mps2, gnss_std_m):
     """Filter the fixes and return the state track and NIS per step.
 
     The first fix initialises the position with zero velocity and a loose
-    velocity variance, so the first NIS value is NaN (no prediction yet).
+    velocity variance, so the first NIS value is NaN (no prediction yet). A
+    step whose fix is missing (NaN, a dropout) is predicted but not updated,
+    and its NIS is NaN; one dropped sample therefore does not poison the
+    state, which is what a log from a real receiver looks like.
     """
+    fixes_m = np.asarray(fixes_m, dtype=float).reshape(-1, 2)
+    accel_std_mps2 = _non_negative("accel_std_mps2", accel_std_mps2, "run_gnss_filter")
+    gnss_std_m = _positive("gnss_std_m", gnss_std_m, "run_gnss_filter")
+    n = len(fixes_m)
+    if n < 2:
+        raise ValueError(f"run_gnss_filter: {n} fixes, need at least two")
+    if not np.isfinite(fixes_m[0]).all():
+        raise ValueError("run_gnss_filter: the first fix is missing, nothing to start from")
+
     F, Q = cv_model(dt_s, accel_std_mps2)
     H = np.hstack([np.eye(2), np.zeros((2, 2))])
     R = gnss_std_m**2 * np.eye(2)
 
-    n = len(fixes_m)
     x = np.r_[fixes_m[0], 0.0, 0.0]
     P = np.diag([gnss_std_m**2, gnss_std_m**2, 25.0, 25.0])
     xs = np.zeros((n, 4))
@@ -52,7 +95,8 @@ def run_gnss_filter(fixes_m, dt_s, accel_std_mps2, gnss_std_m):
     for k in range(1, n):
         x = F @ x
         P = F @ P @ F.T + Q
-        x, P, nis_vals[k] = _update(x, P, fixes_m[k] - H @ x, H, R)
+        if np.isfinite(fixes_m[k]).all():
+            x, P, nis_vals[k] = _update(x, P, fixes_m[k] - H @ x, H, R)
         xs[k] = x
     return xs, nis_vals
 
@@ -78,13 +122,27 @@ def run_gnss_odo_filter(
     heading uncertainty. Before that (start-up, or a vehicle close to
     standing still) the step updates on GNSS alone and its NIS is NaN.
     Otherwise the NIS is the joint 3-dof value.
+
+    A missing fix or a missing speed drops that measurement row for the step
+    and the update runs on what is left, so the NIS dof can be lower on a
+    step with a dropout. A step with nothing left is predicted only.
     """
+    fixes_m = np.asarray(fixes_m, dtype=float).reshape(-1, 2)
+    speed_mps = np.asarray(speed_mps, dtype=float).reshape(-1)
+    n = _check_lengths("run_gnss_odo_filter", fixes_m=fixes_m, speed_mps=speed_mps)
+    if n < 2:
+        raise ValueError(f"run_gnss_odo_filter: {n} samples, need at least two")
+    accel_std_mps2 = _non_negative("accel_std_mps2", accel_std_mps2, "run_gnss_odo_filter")
+    gnss_std_m = _positive("gnss_std_m", gnss_std_m, "run_gnss_odo_filter")
+    speed_std_mps = _positive("speed_std_mps", speed_std_mps, "run_gnss_odo_filter")
+    if not np.isfinite(fixes_m[0]).all():
+        raise ValueError(
+            "run_gnss_odo_filter: the first fix is missing, nothing to start from"
+        )
+
     F, Q = cv_model(dt_s, accel_std_mps2)
     H_gnss = np.hstack([np.eye(2), np.zeros((2, 2))])
-    R_gnss = gnss_std_m**2 * np.eye(2)
-    R = np.diag([gnss_std_m**2, gnss_std_m**2, speed_std_mps**2])
 
-    n = len(fixes_m)
     x = np.r_[fixes_m[0], 0.0, 0.0]
     P = np.diag([gnss_std_m**2, gnss_std_m**2, 25.0, 25.0])
     xs = np.zeros((n, 4))
@@ -95,12 +153,26 @@ def run_gnss_odo_filter(
         P = F @ P @ F.T + Q
         speed_pred = np.hypot(x[2], x[3])
         vel_std_mps = np.sqrt(np.linalg.eigvalsh(P[2:, 2:])[-1])
-        if vel_std_mps > max_heading_std_rad * speed_pred:
-            x, P, _ = _update(x, P, fixes_m[k] - H_gnss @ x, H_gnss, R_gnss)
-        else:
-            H = np.vstack([H_gnss, np.r_[0.0, 0.0, x[2:] / speed_pred]])
-            nu = np.r_[fixes_m[k] - x[:2], speed_mps[k] - speed_pred]
-            x, P, nis_vals[k] = _update(x, P, nu, H, R)
+        rows, values, variances = [], [], []
+        if np.isfinite(fixes_m[k]).all():
+            rows.extend([H_gnss[0], H_gnss[1]])
+            values.extend(fixes_m[k])
+            variances.extend([gnss_std_m**2] * 2)
+        used_speed = bool(
+            np.isfinite(speed_mps[k])
+            and speed_pred > 0.0
+            and vel_std_mps <= max_heading_std_rad * speed_pred
+        )
+        if used_speed:
+            rows.append(np.r_[0.0, 0.0, x[2:] / speed_pred])
+            values.append(speed_mps[k])
+            variances.append(speed_std_mps**2)
+        if rows:
+            H = np.asarray(rows)
+            nu = np.asarray(values) - H @ x
+            x, P, step_nis = _update(x, P, nu, H, np.diag(variances))
+            if used_speed:
+                nis_vals[k] = step_nis
         xs[k] = x
     return xs, nis_vals
 
@@ -235,9 +307,67 @@ def run_gnss_odo_gyro_filter(
     column, the heading innovation over its sd. Unlike the gyro this says
     where the heading is, not how it changes, so the GNSS fixes cannot turn
     it onto a spoofed track without a heading innovation to match.
+
+    A measurement that is missing on a step (NaN, a dropout) drops its row
+    for that step only: the update runs on the rows that are there, the NIS
+    is over those rows, and the dropped column of the track-frame
+    innovations stays NaN, which the CUSUM holds rather than resets. A step
+    with no usable measurement is predicted only.
     """
-    n = len(fixes_m)
+    fixes_m = np.asarray(fixes_m, dtype=float).reshape(-1, 2)
+    speed_mps = np.asarray(speed_mps, dtype=float).reshape(-1)
+    yaw_rate_radps = np.asarray(yaw_rate_radps, dtype=float).reshape(-1)
+    n = _check_lengths(
+        "run_gnss_odo_gyro_filter",
+        fixes_m=fixes_m,
+        speed_mps=speed_mps,
+        yaw_rate_radps=yaw_rate_radps,
+    )
+    accel_std_mps2 = _non_negative(
+        "accel_std_mps2", accel_std_mps2, "run_gnss_odo_gyro_filter"
+    )
+    gnss_std_m = _positive("gnss_std_m", gnss_std_m, "run_gnss_odo_gyro_filter")
+    speed_std_mps = _positive("speed_std_mps", speed_std_mps, "run_gnss_odo_gyro_filter")
+    gyro_std_radps = _positive("gyro_std_radps", gyro_std_radps, "run_gnss_odo_gyro_filter")
+    if not isinstance(n_init, int) or isinstance(n_init, bool):
+        raise TypeError(f"run_gnss_odo_gyro_filter: n_init must be an int, got {n_init!r}")
+    if n_init < 2:
+        raise ValueError(f"run_gnss_odo_gyro_filter: n_init must be at least 2, got {n_init}")
+    if n_init > n:
+        raise ValueError(
+            f"run_gnss_odo_gyro_filter: n_init is {n_init} but the run has {n} samples; "
+            "the start pose is fitted to the first n_init samples"
+        )
+    if (mag_psi_rad is None) != (mag_std_rad is None):
+        raise ValueError(
+            "run_gnss_odo_gyro_filter: mag_psi_rad and mag_std_rad go together; "
+            f"got mag_psi_rad={'set' if mag_psi_rad is not None else 'None'}, "
+            f"mag_std_rad={'set' if mag_std_rad is not None else 'None'}"
+        )
+    if bias_std_radps is None and bias_rw_radps:
+        raise ValueError(
+            "run_gnss_odo_gyro_filter: bias_rw_radps only applies with bias_std_radps set"
+        )
+
     k0 = n_init - 1
+    if not np.isfinite(fixes_m[:n_init]).all():
+        bad = int(np.flatnonzero(~np.isfinite(fixes_m[:n_init]).all(axis=1))[0])
+        raise ValueError(
+            f"run_gnss_odo_gyro_filter: the fix of sample {bad} is missing, and the start "
+            f"pose is fitted to the first {n_init} samples"
+        )
+    if not np.isfinite(speed_mps[:n_init]).all():
+        bad = int(np.flatnonzero(~np.isfinite(speed_mps[:n_init]))[0])
+        raise ValueError(
+            f"run_gnss_odo_gyro_filter: the wheel speed of sample {bad} is missing, and the "
+            f"start pose is fitted to the first {n_init} samples"
+        )
+    if not np.isfinite(yaw_rate_radps[:n_init]).all():
+        bad = int(np.flatnonzero(~np.isfinite(yaw_rate_radps[:n_init]))[0])
+        raise ValueError(
+            f"run_gnss_odo_gyro_filter: the yaw rate of sample {bad} is missing, and the "
+            f"start pose is fitted to the first {n_init} samples"
+        )
     pos0, psi0, psi_var, _ = fit_start_heading(
         fixes_m[:n_init], speed_mps[:n_init], yaw_rate_radps[:n_init], dt_s, gnss_std_m
     )
@@ -293,7 +423,21 @@ def run_gnss_odo_gyro_filter(
         T = np.eye(len(r))
         T[:2, :2] = [[c, sn], [-sn, c]]
         S_track = T @ (H @ P @ H.T + R) @ T.T
-        nu_track[k] = T @ nu / np.sqrt(np.diag(S_track))
-        x, P, nis_vals[k] = _update(x, P, nu, H, R)
+        present = np.isfinite(nu)
+        # a plain T @ nu would turn the whole row into NaN, because 0 * NaN is
+        # NaN in the rows the rotation does not touch: project zeros and put
+        # the gaps back afterwards
+        track = T @ np.where(present, nu, 0.0) / np.sqrt(np.diag(S_track))
+        track[~present] = np.nan
+        if len(present) > 2 and not present[:2].all():
+            track[:2] = np.nan  # along and across need both position rows
+        nu_track[k] = track
+        if present.all():
+            x, P, nis_vals[k] = _update(x, P, nu, H, R)
+        elif present.any():
+            rows = np.flatnonzero(present)
+            x, P, nis_vals[k] = _update(
+                x, P, nu[rows], H[rows], R[np.ix_(rows, rows)]
+            )
         xs[k] = x
     return xs, nis_vals, nu_track
