@@ -83,19 +83,25 @@ them the detector is the per-step NIS gate, whose per-step false alarm
 probability (`--nis-pfa`, one an hour at 10 Hz by default) is printed.
 
 ```sh
-spoofdet simulate --attack drag-across --rate 0.1 --start 60 --out run.csv
+spoofdet simulate --duration 120 --attack drag-across --rate 0.1 --start 60 --out run.csv
 spoofdet detect run.csv
 spoofdet detect run.csv --json --track track.csv
 spoofdet detect - < run.jsonl
 ```
 
 ```
-run.csv: 600 samples, 59.9 s at 10.0 Hz
+run.csv: 1200 samples, 119.9 s at 10.0 Hz
 filter gyro, detector cusum on along, across, speed, heading (gate 26.28, 4 dof)
-14 alarm steps, first at 72.2 s (across at 72.2 s); 420.35 alarms/h
-mean NIS 4.26, 1.67 % of steps over the NIS gate (p 2.77778e-05 is 1.0
-alarms/h on clean data), peak |stat| 27.4
+41 alarm steps, first at 71.0 s (across at 71.0 s, heading at 113.6 s); 1231.03 alarms/h
+mean NIS 5.01, 0.00 % of steps over the NIS gate (p 2.77778e-05 is 1.0
+alarms/h on clean data), peak |stat| 14.3
+note: the gyro zero-rate offset is not estimated; a 1 deg/s offset makes the
+CUSUM alarm on most steps (pass bias_std_radps to estimate it)
 ```
+
+That is the notes' 0.1 m/s sideways drag, found 11 s after it starts, on the
+across column, with the heading column following a minute later as the pull
+keeps going.
 
 `detect` exits 0 when nothing alarmed, 1 when the detector alarmed and 2 when
 the log or an argument could not be used, so it can be the body of a cron job
