@@ -22,6 +22,15 @@ class Trajectory:
 def simulate_trajectory(
     rng, n_steps, dt_s=0.1, accel_std_mps2=0.2, vel0_mps=(2.0, 0.5)
 ):
+    n_steps = int(n_steps)
+    if n_steps < 2:
+        raise ValueError(f"simulate_trajectory: {n_steps} steps, need at least two")
+    if not np.isfinite(dt_s) or dt_s <= 0.0:
+        raise ValueError(f"simulate_trajectory: dt_s must be positive, got {dt_s}")
+    if not np.isfinite(accel_std_mps2) or accel_std_mps2 < 0.0:
+        raise ValueError(
+            f"simulate_trajectory: accel_std_mps2 must be zero or positive, got {accel_std_mps2}"
+        )
     t_s = np.arange(n_steps) * dt_s
     acc = rng.normal(0.0, accel_std_mps2, size=(n_steps, 2))
     acc[0] = 0.0
@@ -69,6 +78,10 @@ def gyro_yaw_rate(rng, traj, gyro_std_radps=5.5e-4, bias_radps=0.0):
     The offset is held constant over a run here; temperature drift is not
     modelled.
     """
+    if len(traj.t_s) < 2:
+        raise ValueError(
+            f"gyro_yaw_rate: a rate needs two samples to difference, got {len(traj.t_s)}"
+        )
     psi = np.unwrap(np.arctan2(traj.vel_mps[:, 1], traj.vel_mps[:, 0]))
     dt_s = traj.t_s[1] - traj.t_s[0]
     rate = np.r_[0.0, np.diff(psi) / dt_s]

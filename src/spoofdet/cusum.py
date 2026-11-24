@@ -25,8 +25,21 @@ def cusum(y, drift=0.5, threshold=10.0):
     where a column's upper or lower statistic crossed `threshold`, and the
     signed statistic of each column: the upper one where it is larger,
     minus the lower one otherwise.
+
+    `drift` has to be positive: at or below zero the statistic climbs on a
+    sequence of zeros and the detector alarms on clean data. `threshold` has
+    to be positive for the same reason, and `y` has to hold at least one
+    sample, so a run too short to analyse is an error rather than a silence.
     """
     y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        raise ValueError("cusum: there is nothing to accumulate, y is empty")
+    if y.ndim > 2:
+        raise ValueError(f"cusum: y must be (n,) or (n, m), got shape {y.shape}")
+    if not np.isfinite(drift) or drift <= 0.0:
+        raise ValueError(f"cusum: drift must be positive, got {drift}")
+    if not np.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError(f"cusum: threshold must be positive, got {threshold}")
     flat = y.ndim == 1
     y = y.reshape(len(y), -1)
     g_hi = np.zeros(y.shape[1])
