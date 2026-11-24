@@ -303,3 +303,59 @@ a later start with no walk would probably look like the four-state case,
 not tried. Temperature (or a model of offset against temperature) as an
 input would let the walk be much smaller. A heading reference
 (magnetometer) is still the real fix for both problems.
+
+## 2026-11-24
+
+Magnetometer heading as a fourth measurement in the gyro filter
+(experiments/magnetometer.py). Same set-up as the walk case of 11-23:
+1 deg/s gyro offset in the data, five-state filter with the assumed
+1.1e-4 rad/s per sqrt(s) walk, track-following sideways drag from 60 s,
+600 s runs, 100 seeds, CUSUM 0.5 / 10.5 on every innovation column.
+
+Magnetometer noise from the BMM150 datasheet (BST-BMM150-DS001-05
+rev. 1.4, page 8): 0.6 uT rms per axis in the regular preset, which runs
+at 10 Hz, the filter rate. The horizontal field of 25 uT is my
+assumption. Heading sd 0.6 / 25 = 0.024 rad (1.4 deg) per sample.
+
+```
+filter               rate m/s    FA/h  found  delay s
+gyro only                none     0.4
+gyro only                0.02           0.06     61.7
+gyro only                0.05           0.11    104.7
+gyro only                0.10           0.22    190.8
++ magnetometer           none     0.7
++ magnetometer           0.02           0.97     78.5
++ magnetometer           0.05           1.00     25.2
++ magnetometer           0.10           1.00     13.1
++ mag, 2 uT offset       none  6065.2
++ mag, 2 uT offset       0.02           1.00      0.3
++ mag, 2 uT offset       0.05           1.00      0.3
++ mag, 2 uT offset       0.10           1.00      0.3
+```
+
+The gyro-only rows match 11-23, so the baseline reproduces. With a clean
+magnetometer the gap closes: 0.1 m/s goes from 0.22 to all runs, and even
+0.02 m/s, which ended 11 m off unnoticed on 11-22, is found on 97 % of
+runs after a median 79 s. The heading can no longer turn onto the
+spoofed track, because every degree it turns shows up in the heading
+innovation. False alarms 0.7/h against 0.4/h; 1.6 h of clean data each,
+so I would not read much into the difference.
+
+The last case is the catch. The same datasheet page gives +-2 uT zero-B
+offset after calibration, and a 2 uT body-frame offset on the forward
+axis puts 3 to 4.6 deg of heading error on these runs (they mostly head
+east-north-east, where that offset does the most; scratch check on 5
+seeds). The filter is told the readings only have white noise, so it
+follows the biased heading (filter heading 3.2 to 4.0 deg off, 3 seeds)
+and at 2 m/s that is about 0.14 m/s of apparent sideways motion against
+the fixes: the across-track column alarms over a thousand times a run
+and the heading column almost never. 6065 alarms an hour, and the
+"found" rows with 0.3 s delay are just those false alarms.
+
+So an uncalibrated-looking residual of the size Bosch quotes after their
+own calibration looks exactly like the attack. The magnetometer is only
+useful if the remaining offset is either much smaller than 2 uT or in the
+filter. A hard-iron offset as two more states is the obvious next step,
+but it is observable only while the vehicle turns, and on these mostly
+straight runs a slow drag could probably be absorbed into it the same way
+it was absorbed into the gyro offset. Not tried yet.

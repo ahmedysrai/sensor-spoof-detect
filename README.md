@@ -6,10 +6,10 @@ sensors against each other in a Kalman filter.
 The project is simulation based. So far it has a planar vehicle simulator
 with GNSS fixes, two GNSS spoofing profiles (a position jump and a slow
 drag-off), wheel odometry speed, a gyro yaw rate with the Bosch BMI088
-noise density and zero-rate offset, a constant-velocity Kalman filter (an EKF once the speed is
-fused), a unicycle EKF that lets the gyro carry the heading, a per-step
-normalised innovation squared (NIS) gate and a two-sided CUSUM on the
-innovations.
+noise density and zero-rate offset, a magnetometer with Bosch BMM150
+noise, a constant-velocity Kalman filter (an EKF once the speed is fused),
+a unicycle EKF that lets the gyro carry the heading, a per-step normalised
+innovation squared (NIS) gate and a two-sided CUSUM on the innovations.
 
 With GNSS as the only sensor the gate catches a 15 m jump within about 2 s
 but misses a 1 m/s drag-off completely, even after it has pulled the track
@@ -32,7 +32,14 @@ the offset as a fifth state. That brings clean-run false alarms back to
 0.4/h, but the offset estimate is one more way for the filter's heading to
 turn onto the spoofed track: with a random walk on the offset for
 temperature drift, a 0.1 m/s sideways pull is found on 22 % of runs,
-against all of them before. NOTES.md has the numbers and the reasons.
+against all of them before. A magnetometer heading (Bosch BMM150 noise)
+closes that gap, since the filter's heading can no longer turn without the
+magnetometer disagreeing: 0.1 m/s is found on every run after a median
+13 s and 0.02 m/s on 97 % of runs. That holds only for a well calibrated
+magnetometer. A 2 uT hard-iron offset, the residual the datasheet gives
+after calibration, tilts the heading by about 4 degrees and the CUSUM then
+alarms thousands of times an hour on clean runs. NOTES.md has the numbers
+and the reasons.
 
 ## Run it
 
@@ -44,4 +51,5 @@ python experiments/odo_cross_check.py   # about 150 s
 python experiments/cusum_vs_gate.py     # about 140 s
 python experiments/slow_drag.py         # about 4 min
 python experiments/gyro_offset.py       # about 12 min
+python experiments/magnetometer.py      # about 10 min
 ```
