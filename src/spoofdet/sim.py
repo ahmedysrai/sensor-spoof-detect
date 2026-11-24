@@ -73,3 +73,26 @@ def gyro_yaw_rate(rng, traj, gyro_std_radps=5.5e-4, bias_radps=0.0):
     dt_s = traj.t_s[1] - traj.t_s[0]
     rate = np.r_[0.0, np.diff(psi) / dt_s]
     return rate + bias_radps + rng.normal(0.0, gyro_std_radps, size=rate.shape)
+
+
+def magnetometer(rng, traj, field_ut=25.0, noise_ut=0.6, offset_ut=(0.0, 0.0)):
+    """Horizontal magnetometer reading per sample, (n, 2) in uT, body frame.
+
+    Columns are forward and left. The vehicle is level and the field points
+    north in ENU (magnetic declination zero), so a vehicle heading psi from
+    east reads field * [sin(psi), cos(psi)]. `field_ut` is the horizontal
+    component of the Earth's field at the site, 25 uT assumed here; it is
+    site dependent, read it from a field model such as the WMM.
+
+    Noise is white per axis. The default is the Bosch BMM150 x/y output
+    noise in the regular preset, 0.6 uT rms at its 10 Hz recommended ODR
+    (datasheet BST-BMM150-DS001-05, rev. 1.4, April 2020, page 8).
+    `offset_ut` is a constant body-frame offset, the hard-iron error left
+    after calibration. The same page gives a zero-B offset of +-2 uT after
+    Bosch's eCompass calibration. Soft iron (a scale and cross-axis error)
+    is not modelled.
+    """
+    psi = np.arctan2(traj.vel_mps[:, 1], traj.vel_mps[:, 0])
+    m = field_ut * np.column_stack([np.sin(psi), np.cos(psi)])
+    m += np.asarray(offset_ut, dtype=float)
+    return m + rng.normal(0.0, noise_ut, size=m.shape)

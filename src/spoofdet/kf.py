@@ -143,6 +143,16 @@ def unicycle_predict(
     return x, F @ P @ F.T + Q
 
 
+def mag_heading(mag_ut):
+    """Heading psi in rad from horizontal magnetometer readings, (n, 2) in uT.
+
+    Columns forward and left, as from spoofdet.sim.magnetometer: the field
+    points north, so a vehicle heading psi from east reads it at
+    [sin(psi), cos(psi)]. Declination and tilt are taken as zero.
+    """
+    return np.arctan2(mag_ut[:, 0], mag_ut[:, 1])
+
+
 def fit_start_heading(fixes_m, speed_mps, yaw_rate_radps, dt_s, gnss_std_m):
     """Position and heading at the last of `fixes_m`, from dead reckoning.
 
@@ -190,6 +200,8 @@ def run_gnss_odo_gyro_filter(
     max_heading_std_rad=0.2,
     bias_std_radps=None,
     bias_rw_radps=0.0,
+    mag_psi_rad=None,
+    mag_std_rad=None,
 ):
     """GNSS, wheel speed and gyro yaw rate in a unicycle EKF.
 
@@ -216,6 +228,13 @@ def run_gnss_odo_gyro_filter(
     and puts the start heading off by about b * T / 2 for a window of T
     seconds; the start covariance carries that term and its correlation
     with b.
+
+    With `mag_psi_rad` (n,) set, a magnetometer heading (see mag_heading) is
+    a fourth measurement row with sd `mag_std_rad`, its innovation wrapped
+    to +-pi. NIS is then 4-dof and the track-frame innovations get a fourth
+    column, the heading innovation over its sd. Unlike the gyro this says
+    where the heading is, not how it changes, so the GNSS fixes cannot turn
+    it onto a spoofed track without a heading innovation to match.
     """
     n = len(fixes_m)
     k0 = n_init - 1
@@ -241,13 +260,18 @@ def run_gnss_odo_gyro_filter(
         P[2, 4] = P[4, 2] = -(bias_std_radps**2) * half_window_s
 
     m = len(x)
-    H = np.zeros((3, m))
+    r = [gnss_std_m**2, gnss_std_m**2, speed_std_mps**2]
+    if mag_psi_rad is not None:
+        r.append(mag_std_rad**2)
+    H = np.zeros((len(r), m))
     H[0, 0] = H[1, 1] = H[2, 3] = 1.0
-    R = np.diag([gnss_std_m**2, gnss_std_m**2, speed_std_mps**2])
+    if mag_psi_rad is not None:
+        H[3, 2] = 1.0
+    R = np.diag(r)
 
     xs = np.full((n, m), np.nan)
     nis_vals = np.full(n, np.nan)
-    nu_track = np.full((n, 3), np.nan)
+    nu_track = np.full((n, len(r)), np.nan)
     xs[k0] = x
     for k in range(k0 + 1, n):
         x, P = unicycle_predict(
@@ -259,9 +283,15 @@ def run_gnss_odo_gyro_filter(
             gyro_std_radps,
             bias_rw_radps,
         )
-        nu = np.r_[fixes_m[k], speed_mps[k]] - H @ x
+        z = np.r_[fixes_m[k], speed_mps[k]]
+        if mag_psi_rad is not None:
+            z = np.r_[z, mag_psi_rad[k]]
+        nu = z - H @ x
+        if mag_psi_rad is not None:
+            nu[3] = np.angle(np.exp(1j * nu[3]))
         c, sn = np.cos(x[2]), np.sin(x[2])
-        T = np.array([[c, sn, 0.0], [-sn, c, 0.0], [0.0, 0.0, 1.0]])
+        T = np.eye(len(r))
+        T[:2, :2] = [[c, sn], [-sn, c]]
         S_track = T @ (H @ P @ H.T + R) @ T.T
         nu_track[k] = T @ nu / np.sqrt(np.diag(S_track))
         x, P, nis_vals[k] = _update(x, P, nu, H, R)

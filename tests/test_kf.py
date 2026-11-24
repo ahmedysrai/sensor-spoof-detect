@@ -1,19 +1,28 @@
 import numpy as np
 import pytest
 
-from spoofdet.attacks import drag_off, jump
+from spoofdet.attacks import drag_across_track, drag_off, jump
 from spoofdet.kf import (
     fit_start_heading,
+    mag_heading,
     run_gnss_filter,
     run_gnss_odo_filter,
     run_gnss_odo_gyro_filter,
 )
 from spoofdet.nis import nis_threshold
-from spoofdet.sim import gnss_fixes, gyro_yaw_rate, simulate_trajectory, wheel_speed
+from spoofdet.sim import (
+    gnss_fixes,
+    gyro_yaw_rate,
+    magnetometer,
+    simulate_trajectory,
+    wheel_speed,
+)
 
 DT_S, ACC_STD, GNSS_STD = 0.1, 0.2, 1.5
 SPEED_STD = 0.05
 GYRO_STD = 5.5e-4
+FIELD_UT, MAG_NOISE_UT = 25.0, 0.6
+MAG_STD = MAG_NOISE_UT / FIELD_UT  # rad, small-angle
 
 
 @pytest.fixture
@@ -258,3 +267,60 @@ def test_start_correlation_lets_the_first_fixes_correct_the_offset():
         )
         err.append(xs[-1, 4] - b)
     assert np.mean(err) / b > -0.65
+
+
+def test_magnetometer_facing_north_reads_the_field_straight_ahead(rng):
+    traj = simulate_trajectory(rng, 3, DT_S, 0.0, vel0_mps=(0.0, 1.0))
+    m = magnetometer(rng, traj, FIELD_UT, 0.0)
+    np.testing.assert_allclose(m, [[FIELD_UT, 0.0]] * 3, atol=1e-9)
+
+
+def test_noise_free_magnetometer_heading_is_the_direction_of_travel(rng):
+    traj = simulate_trajectory(rng, 2000, DT_S, 1.0)
+    psi = mag_heading(magnetometer(rng, traj, FIELD_UT, 0.0))
+    v = traj.vel_mps
+    np.testing.assert_allclose(psi, np.arctan2(v[:, 1], v[:, 0]), atol=1e-9)
+
+
+def test_mean_nis_with_magnetometer_is_four_when_heading_west(rng):
+    # heading near +-pi, where the magnetometer heading wraps and the
+    # filter's unwrapped heading does not
+    traj = simulate_trajectory(rng, 5000, DT_S, ACC_STD, vel0_mps=(-2.0, 0.05))
+    speed = wheel_speed(rng, traj, SPEED_STD)
+    rate = gyro_yaw_rate(rng, traj, GYRO_STD)
+    z = gnss_fixes(rng, traj, GNSS_STD)
+    psi = mag_heading(magnetometer(rng, traj, FIELD_UT, MAG_NOISE_UT))
+    _, nis_vals, y = run_gnss_odo_gyro_filter(
+        z,
+        speed,
+        rate,
+        DT_S,
+        ACC_STD,
+        GNSS_STD,
+        SPEED_STD,
+        GYRO_STD,
+        mag_psi_rad=psi,
+        mag_std_rad=MAG_STD,
+    )
+    # 4950 chi-square(4) values (sd 2.83): standard error about 0.04
+    assert np.mean(nis_vals[50:]) == pytest.approx(4.0, abs=0.2)
+    assert y.shape[1] == 4
+    np.testing.assert_allclose(np.std(y[50:], axis=0), 1.0, atol=0.06)
+
+
+def test_magnetometer_keeps_the_lean_of_a_slow_sideways_drag(rng):
+    # 0.05 m/s for four minutes: with the gyro alone the filter's heading
+    # turns onto the spoofed track and the lean fades to almost nothing
+    # (notes 11-22); a heading reference holds it
+    traj = simulate_trajectory(rng, 3000, DT_S, ACC_STD)
+    speed = wheel_speed(rng, traj, SPEED_STD)
+    rate = gyro_yaw_rate(rng, traj, GYRO_STD)
+    z = gnss_fixes(rng, traj, GNSS_STD)
+    z = drag_across_track(z, traj.t_s, 60.0, 0.05, traj.vel_mps)
+    psi = mag_heading(magnetometer(rng, traj, FIELD_UT, MAG_NOISE_UT))
+    args = (z, speed, rate, DT_S, ACC_STD, GNSS_STD, SPEED_STD, GYRO_STD)
+    _, _, y_gyro = run_gnss_odo_gyro_filter(*args)
+    _, _, y_mag = run_gnss_odo_gyro_filter(*args, mag_psi_rad=psi, mag_std_rad=MAG_STD)
+    late = slice(1800, None)  # from 180 s
+    assert abs(np.mean(y_gyro[late, 1])) < 0.2
+    assert np.mean(y_mag[late, 1]) > 0.4
