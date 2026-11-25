@@ -38,8 +38,9 @@ magnetometer disagreeing: 0.1 m/s is found on every run after a median
 13 s and 0.02 m/s on 97 % of runs. That holds only for a well calibrated
 magnetometer. A 2 uT hard-iron offset, the residual the datasheet gives
 after calibration, tilts the heading by about 4 degrees and the CUSUM then
-alarms thousands of times an hour on clean runs. NOTES.md has the numbers
-and the reasons.
+alarms thousands of times an hour on clean runs. HOW_IT_WORKS.md explains
+the filters, the detectors and where the simulation flatters them;
+NOTES.md has the dated numbers.
 
 ## Run it
 
