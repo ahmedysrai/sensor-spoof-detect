@@ -5,6 +5,7 @@ from spoofdet.attacks import drag_across_track, drag_off, jump
 from spoofdet.kf import (
     fit_start_heading,
     mag_heading,
+    mag_heading_model,
     run_gnss_filter,
     run_gnss_odo_filter,
     run_gnss_odo_gyro_filter,
@@ -324,3 +325,65 @@ def test_magnetometer_keeps_the_lean_of_a_slow_sideways_drag(rng):
     late = slice(1800, None)  # from 180 s
     assert abs(np.mean(y_gyro[late, 1])) < 0.2
     assert np.mean(y_mag[late, 1]) > 0.4
+
+
+def test_hard_iron_heading_model_matches_the_reading_and_its_slopes(rng):
+    traj = simulate_trajectory(rng, 200, DT_S, 1.0)
+    offset = np.array([2.0, -1.5])
+    psi_read = mag_heading(magnetometer(rng, traj, FIELD_UT, 0.0, offset))
+    psi = np.arctan2(traj.vel_mps[:, 1], traj.vel_mps[:, 0])
+    eps = 1e-6
+    for k in range(0, 200, 20):
+        h, J = mag_heading_model(psi[k], offset, FIELD_UT)
+        assert np.angle(np.exp(1j * (h - psi_read[k]))) == pytest.approx(0, abs=1e-9)
+        steps = [(eps, 0, 0), (0, eps, 0), (0, 0, eps)]
+        num = [
+            mag_heading_model(psi[k] + a, offset + [b, c], FIELD_UT)[0] - h
+            for a, b, c in steps
+        ]
+        np.testing.assert_allclose(J, np.array(num) / eps, atol=1e-5)
+    h, J = mag_heading_model(0.3, np.zeros(2), FIELD_UT)
+    assert h == pytest.approx(0.3)
+    np.testing.assert_allclose(
+        J, [1.0, np.cos(0.3) / FIELD_UT, -np.sin(0.3) / FIELD_UT]
+    )
+
+
+def _mag_run(rng, offset_ut, **kwargs):
+    traj = simulate_trajectory(rng, 3000, DT_S, ACC_STD)
+    speed = wheel_speed(rng, traj, SPEED_STD)
+    rate = gyro_yaw_rate(rng, traj, GYRO_STD)
+    z = gnss_fixes(rng, traj, GNSS_STD)
+    psi = mag_heading(magnetometer(rng, traj, FIELD_UT, MAG_NOISE_UT, offset_ut))
+    return run_gnss_odo_gyro_filter(
+        z,
+        speed,
+        rate,
+        DT_S,
+        ACC_STD,
+        GNSS_STD,
+        SPEED_STD,
+        GYRO_STD,
+        mag_psi_rad=psi,
+        mag_std_rad=MAG_STD,
+        **kwargs,
+    )
+
+
+def test_hard_iron_states_learn_a_two_microtesla_offset():
+    # same seed for both runs, so the data are identical
+    offset = (2.0, -1.0)
+    _, nis_white, _ = _mag_run(np.random.default_rng(3), offset)
+    xs, nis_vals, y = _mag_run(
+        np.random.default_rng(3), offset, hard_iron_std_ut=2.0, field_ut=FIELD_UT
+    )
+    late = slice(1200, None)  # from 120 s
+    assert np.mean(nis_white[late]) > 6.0
+    assert np.mean(nis_vals[late]) == pytest.approx(4.0, abs=0.25)
+    np.testing.assert_allclose(np.mean(y[late], axis=0), 0.0, atol=0.15)
+    np.testing.assert_allclose(xs[-1, -2:], offset, atol=0.2)
+
+
+def test_hard_iron_states_need_the_field_strength(rng):
+    with pytest.raises(ValueError, match="field_ut"):
+        _mag_run(rng, (0.0, 0.0), hard_iron_std_ut=2.0)

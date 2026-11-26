@@ -2,8 +2,9 @@
 
 The constant-velocity filters use x = [east_m, north_m, ve_mps, vn_mps].
 The gyro filter uses a unicycle state x = [east_m, north_m, psi_rad,
-speed_mps], with heading psi counterclockwise from east, and optionally
-the gyro zero-rate offset b_radps as a fifth entry. The usual tracking
+speed_mps], with heading psi counterclockwise from east, optionally
+followed by the gyro zero-rate offset b_radps and then the magnetometer
+hard-iron offset [fwd_ut, left_ut]. The usual tracking
 notation: F, Q for the model, H, R for the measurement, nu = z - h(x_pred)
 and S = H P_pred H^T + R for the innovation.
 """
@@ -106,7 +107,14 @@ def run_gnss_odo_filter(
 
 
 def unicycle_predict(
-    x, P, yaw_rate_radps, dt_s, accel_std_mps2, gyro_std_radps, bias_rw_radps=0.0
+    x,
+    P,
+    yaw_rate_radps,
+    dt_s,
+    accel_std_mps2,
+    gyro_std_radps,
+    bias_rw_radps=0.0,
+    has_bias=None,
 ):
     """Propagate the unicycle state over one step with the gyro as input.
 
@@ -117,12 +125,16 @@ def unicycle_predict(
 
     With a fifth state, the gyro zero-rate offset b_radps, the heading turns
     by (rate - b) instead, and b is a random walk of `bias_rw_radps` per
-    sqrt(s).
+    sqrt(s). `has_bias` says whether x[4] is that offset; left as None it
+    is taken to be when x has five entries. Entries after the first four
+    (or five) are held constant with no process noise.
     """
     e, n, psi, s = x[:4]
     c, sn = np.cos(psi), np.sin(psi)
     m = len(x)
-    rate = yaw_rate_radps - (x[4] if m == 5 else 0.0)
+    if has_bias is None:
+        has_bias = m == 5
+    rate = yaw_rate_radps - (x[4] if has_bias else 0.0)
     x = x.copy()
     x[:4] = [e + s * dt_s * c, n + s * dt_s * sn, psi + rate * dt_s, s]
     F = np.eye(m)
@@ -137,7 +149,7 @@ def unicycle_predict(
         [dt_s, 0.0],
     ]
     Q = G @ np.diag([accel_std_mps2**2, gyro_std_radps**2]) @ G.T
-    if m == 5:
+    if has_bias:
         F[2, 4] = -dt_s
         Q[4, 4] = bias_rw_radps**2 * dt_s
     return x, F @ P @ F.T + Q
@@ -151,6 +163,22 @@ def mag_heading(mag_ut):
     [sin(psi), cos(psi)]. Declination and tilt are taken as zero.
     """
     return np.arctan2(mag_ut[:, 0], mag_ut[:, 1])
+
+
+def mag_heading_model(psi_rad, offset_ut, field_ut):
+    """Heading that mag_heading reads with a hard-iron offset, and its slopes.
+
+    The reading is field * [sin(psi), cos(psi)] + [fwd_ut, left_ut], so the
+    heading it gives is atan2(field sin(psi) + fwd, field cos(psi) + left).
+    Returns that heading and its derivatives by psi, fwd and left. With zero
+    offset the heading is psi and the slopes are 1, cos(psi) / field and
+    -sin(psi) / field: a forward offset shows most heading east or west.
+    """
+    u = field_ut * np.sin(psi_rad) + offset_ut[0]
+    w = field_ut * np.cos(psi_rad) + offset_ut[1]
+    r2 = u * u + w * w
+    d_psi = field_ut * (w * np.cos(psi_rad) + u * np.sin(psi_rad)) / r2
+    return float(np.arctan2(u, w)), np.array([d_psi, w / r2, -u / r2])
 
 
 def fit_start_heading(fixes_m, speed_mps, yaw_rate_radps, dt_s, gnss_std_m):
@@ -202,6 +230,8 @@ def run_gnss_odo_gyro_filter(
     bias_rw_radps=0.0,
     mag_psi_rad=None,
     mag_std_rad=None,
+    hard_iron_std_ut=None,
+    field_ut=None,
 ):
     """GNSS, wheel speed and gyro yaw rate in a unicycle EKF.
 
@@ -235,6 +265,13 @@ def run_gnss_odo_gyro_filter(
     column, the heading innovation over its sd. Unlike the gyro this says
     where the heading is, not how it changes, so the GNSS fixes cannot turn
     it onto a spoofed track without a heading innovation to match.
+
+    With `hard_iron_std_ut` set as well, the state ends with the
+    magnetometer hard-iron offset [fwd_ut, left_ut], a constant with a
+    zero-mean prior of that sd per axis, and the heading row is
+    mag_heading_model with the horizontal field `field_ut`. The offset is
+    only told apart from a heading error by turning: on a straight run a
+    forward offset and a turned heading read the same.
     """
     n = len(fixes_m)
     k0 = n_init - 1
@@ -258,6 +295,13 @@ def run_gnss_odo_gyro_filter(
         P[2, 2] += (bias_std_radps * half_window_s) ** 2
         # heading error +b * T / 2 against offset error -b
         P[2, 4] = P[4, 2] = -(bias_std_radps**2) * half_window_s
+    hard_iron = hard_iron_std_ut is not None
+    if hard_iron:
+        if mag_psi_rad is None or field_ut is None:
+            raise ValueError("a hard-iron offset needs mag_psi_rad and field_ut")
+        x = np.r_[x, 0.0, 0.0]
+        P = np.pad(P, (0, 2))
+        P[-2, -2] = P[-1, -1] = hard_iron_std_ut**2
 
     m = len(x)
     r = [gnss_std_m**2, gnss_std_m**2, speed_std_mps**2]
@@ -282,11 +326,15 @@ def run_gnss_odo_gyro_filter(
             accel_std_mps2,
             gyro_std_radps,
             bias_rw_radps,
+            has_bias=bias_std_radps is not None,
         )
         z = np.r_[fixes_m[k], speed_mps[k]]
         if mag_psi_rad is not None:
             z = np.r_[z, mag_psi_rad[k]]
         nu = z - H @ x
+        if hard_iron:
+            h_psi, H[3, [2, m - 2, m - 1]] = mag_heading_model(x[2], x[-2:], field_ut)
+            nu[3] = mag_psi_rad[k] - h_psi
         if mag_psi_rad is not None:
             nu[3] = np.angle(np.exp(1j * nu[3]))
         c, sn = np.cos(x[2]), np.sin(x[2])
