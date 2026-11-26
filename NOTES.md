@@ -359,3 +359,67 @@ filter. A hard-iron offset as two more states is the obvious next step,
 but it is observable only while the vehicle turns, and on these mostly
 straight runs a slow drag could probably be absorbed into it the same way
 it was absorbed into the gyro offset. Not tried yet.
+
+## 2026-11-26
+
+Two ways to deal with the 2 uT hard-iron offset from 11-24
+(experiments/hard_iron.py). Same data and settings as magnetometer.py:
+1 deg/s gyro offset estimated with the assumed walk, 2 uT on the forward
+axis, 600 s runs, 100 seeds, CUSUM 0.5 / 10.5 on every column.
+
+- inflated sd: the heading row sd raised from 0.024 rad to
+  hypot(0.6, 2) / 25 = 0.084 rad, nothing else changed.
+- offset states: forward and left offset as two constant states, prior sd
+  2 uT each, heading row through mag_heading_model (the exact atan2 of the
+  offset reading, linearised at the prediction).
+- states, no offset: the same filter on data without an offset, to see
+  what carrying the states costs by itself.
+
+```
+filter               rate m/s    FA/h  found  delay s
+white noise only         none  6065.2
+white noise only         0.02           1.00      0.3
+white noise only         0.05           1.00      0.3
+white noise only         0.10           1.00      0.3
+inflated sd              none   768.9
+inflated sd              0.02           1.00      2.2
+inflated sd              0.05           1.00      2.3
+inflated sd              0.10           0.92      2.2
+offset states            none     0.5
+offset states            0.02           0.25    337.1
+offset states            0.05           0.74     58.7
+offset states            0.10           0.99     18.0
+states, no offset        none     0.5
+states, no offset        0.02           0.28    332.1
+states, no offset        0.05           0.75     61.2
+states, no offset        0.10           0.99     17.8
+```
+
+The first block reproduces 11-24. Inflating the sd is not enough: 769
+false alarms an hour, and the "found" rows are those false alarms again
+(delays of about 2 s). The offset is constant for a given heading, so a
+larger white-noise sd only lowers its weight; the filter still follows a
+biased heading. I did not try a larger sd, since it would throw away the
+reason for having the magnetometer.
+
+The offset states fix the false alarms (0.5/h, back to the clean
+magnetometer's 0.7/h within what 1.6 h of data can tell). The offset is
+learned well on clean runs: scratch check on 20 seeds, error at 600 s
+0.00 +- 0.03 uT forward and -0.01 +- 0.05 uT left. On these runs the
+heading wanders 36 to 106 deg over the 10 minutes (5 seeds), so there are
+enough turns.
+
+The cost is what I expected on 11-24: the drag hides partly in the new
+states. Found fraction and delay at 0.02 / 0.05 / 0.1 m/s go from
+0.97 (79 s) / 1.00 (25 s) / 1.00 (13 s) with a perfectly calibrated
+magnetometer to 0.25 (337 s) / 0.74 (59 s) / 0.99 (18 s). The last block
+shows that is all from carrying the states, not from the offset in the
+data. Same 20-seed scratch check under the attack: the forward offset
+estimate ends 0.17 +- 0.08 uT low at 0.02 m/s and 0.42 +- 0.21 uT low at
+0.05 m/s, so the filter explains part of the sideways pull as offset. That
+is still far better than the gyro alone (0.06 / 0.11 / 0.22).
+
+So the offset states are the right default when the calibration is not
+trusted to well under 2 uT. A tighter prior (a better calibration) should
+move the result back towards the clean case; not run yet. Run time about
+14 min.

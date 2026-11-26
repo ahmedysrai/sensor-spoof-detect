@@ -145,7 +145,7 @@ than a real vehicle would be.
   The horizontal field of 25 uT is assumed (it is site dependent), the
   field points north with no declination, and there is no tilt, no soft
   iron and no disturbance from motors or currents. Hard iron appears only
-  in the one case that tests it.
+  in the cases that test it.
 - The attacker starts at 60 s, once the filter has settled.
 
 ## Reproducing the numbers
@@ -159,6 +159,7 @@ python experiments/cusum_vs_gate.py     # about 140 s
 python experiments/slow_drag.py         # about 4 min
 python experiments/gyro_offset.py       # about 12 min
 python experiments/magnetometer.py      # about 10 min
+python experiments/hard_iron.py         # about 14 min
 ```
 
 Seeds are fixed, so each script prints the same table every time. The
@@ -204,14 +205,25 @@ the forward axis, the residual the BMM150 datasheet quotes after
 calibration, the heading is off by 3 to 4.6 degrees, the filter follows
 it, and the across-track column alarms 6065 times an hour on clean runs.
 
+Two fixes for that offset on the same data (`hard_iron.py`). Raising the
+magnetometer heading sd to cover it, from 0.024 to 0.084 rad, still gives
+769 false alarms an hour: the error is constant for a given heading, and
+a white-noise sd only lowers its weight. Two more states for the forward
+and left offset (prior 2 uT per axis) bring it to 0.5/h and learn the
+offset to a few hundredths of a uT on clean runs, which turn enough over
+10 minutes. But the drag can now hide in the offset, as it did in the
+gyro offset: 0.02, 0.05 and 0.1 m/s are found on 0.25, 0.74 and 0.99 of
+runs after a median 337, 59 and 18 s, and the forward offset estimate
+ends 0.42 uT low under the 0.05 m/s drag. The same filter on data with
+no offset gives the same numbers, so the cost is in carrying the states.
+
 ## Limits and what comes next
 
-- The magnetometer result needs a hard-iron offset well under 2 uT or an
-  estimate of it in the filter. Two more states are the obvious fix, but
-  they are observable only in turns, and a slow drag could probably hide
-  in them the way it hid in the gyro offset. Inflating the magnetometer
-  sd to cover the residual is the other option, and I don't know yet
-  what it costs.
+- The hard-iron states rely on the turns in these runs (36 to 106 deg
+  of heading change in 10 minutes on the seeds checked). A vehicle that
+  drives straight would leave the offset and a heading error
+  indistinguishable. How much a tighter offset prior (a better
+  calibration) buys back is not measured yet.
 - The gyro offset walk sets how much a drag can hide in the offset, and
   my value is a guess. A temperature input would let it be much smaller.
 - The false alarm rates rest on a few hours of clean runs (6.4 h for the

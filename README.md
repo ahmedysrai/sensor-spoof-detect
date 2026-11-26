@@ -38,7 +38,11 @@ magnetometer disagreeing: 0.1 m/s is found on every run after a median
 13 s and 0.02 m/s on 97 % of runs. That holds only for a well calibrated
 magnetometer. A 2 uT hard-iron offset, the residual the datasheet gives
 after calibration, tilts the heading by about 4 degrees and the CUSUM then
-alarms thousands of times an hour on clean runs. HOW_IT_WORKS.md explains
+alarms thousands of times an hour on clean runs. Estimating that offset as
+two more filter states brings false alarms back to 0.5/h, at a price: the
+filter can explain part of a slow pull as offset, so 0.05 m/s is found on
+74 % of runs and 0.02 m/s on 25 %. Raising the magnetometer's noise figure
+instead still leaves 769 false alarms an hour. HOW_IT_WORKS.md explains
 the filters, the detectors and where the simulation flatters them;
 NOTES.md has the dated numbers.
 
@@ -53,4 +57,5 @@ python experiments/cusum_vs_gate.py     # about 140 s
 python experiments/slow_drag.py         # about 4 min
 python experiments/gyro_offset.py       # about 12 min
 python experiments/magnetometer.py      # about 10 min
+python experiments/hard_iron.py         # about 14 min
 ```
