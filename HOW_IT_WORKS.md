@@ -226,11 +226,12 @@ no offset gives the same numbers, so the cost is in carrying the states.
   calibration) buys back is not measured yet.
 - The gyro offset walk sets how much a drag can hide in the offset, and
   my value is a guess. A temperature input would let it be much smaller.
-- The false alarm rates rest on a few hours of clean runs (6.4 h for the
-  CUSUM comparison, 1.6 h per magnetometer case), so they show the order
-  of magnitude, not the exact rate.
+- The false alarm rates rest on 6.4 h of clean runs for the CUSUM
+  comparison and 16.5 h per magnetometer case, a handful of alarms each,
+  so they show the order of magnitude, not the exact rate.
 - Not tried yet: an attacker who ramps the rate up slowly, and an attack
   that starts long after the offset has settled.
 - Still to come from the scope: cited u-blox M8 GNSS noise in place of
   the assumed 1.5 m, wheel slip, the learned detector on innovation
-  sequences, LiDAR, and a CLI that runs on a CSV log.
+  sequences and LiDAR. The `spoofdet` command (README) runs the
+  filter on a CSV log, but needs every sensor on one fixed rate.

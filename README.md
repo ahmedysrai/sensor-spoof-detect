@@ -59,3 +59,43 @@ python experiments/gyro_offset.py       # about 12 min
 python experiments/magnetometer.py      # about 10 min
 python experiments/hard_iron.py         # about 14 min
 ```
+
+## Check a log
+
+`pip install -e .` also installs a `spoofdet` command. It reads a CSV log
+with a header row and one row per sample at a fixed rate: `t_s`, `east_m`
+and `north_m` (GNSS fixes in a local ENU frame), `speed_mps` (wheel
+odometry), `yaw_rate_radps` (gyro, counterclockwise positive), and
+optionally `mag_fwd_ut` and `mag_left_ut` (horizontal magnetometer
+reading, body frame). It runs the five-state gyro filter, adds the
+magnetometer and its hard-iron states when those columns are there, and
+prints the CUSUM alarms grouped into intervals:
+
+```sh
+spoofdet simulate log.csv --attack drag-across --size 0.1   # 10 min, 10 Hz
+spoofdet detect log.csv --out steps.csv                     # about 2 s
+```
+
+```
+log.csv: 6000 samples, 599.9 s, GNSS, wheel speed, gyro, magnetometer
+alarms 8.8 s to 8.8 s: 1 (across 1)
+alarms 84.0 s to 162.7 s: 8 (across 5, speed 1, heading 2)
+alarms 202.0 s to 305.9 s: 52 (across 51, heading 1)
+alarms 342.2 s to 342.2 s: 1 (speed 1)
+alarms 399.5 s to 597.9 s: 104 (across 104)
+```
+
+The pull starts at 60 s. The single alarms at 8.8 s and 342.2 s are false
+alarms: the same seed without the attack alarms at 8.8 s, 155.8 s and
+342.2 s. At the default threshold a clean log alarms about once an
+hour (7 alarms in 9.9 h of clean simulated logs), so one isolated alarm
+means little and a long train of them on the same column is the sign to
+look for. `--out` writes the NIS, the track-frame innovations and the
+alarm flag per step. The noise figures default to the parts the
+simulator models (BMI088 gyro, BMM150 magnetometer) and the assumed GNSS
+and wheel speed values; `spoofdet detect --help` lists them. Exit status
+is 0 with no alarms, 1 with alarms and 2 for a log it cannot use.
+
+A log from a GNSS receiver and an IMU running at different rates needs
+resampling onto one rate first. The numbers above all come from simulated
+logs.

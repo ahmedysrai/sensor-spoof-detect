@@ -423,3 +423,29 @@ So the offset states are the right default when the calibration is not
 trusted to well under 2 uT. A tighter prior (a better calibration) should
 move the result back towards the clean case; not run yet. Run time about
 14 min.
+
+## 2026-11-27
+
+`spoofdet` command for CSV logs (src/spoofdet/cli.py). `detect` runs the
+five-state gyro filter, plus magnetometer and hard-iron states when the
+mag columns are there, CUSUM drift 0.5 / threshold 10.5 on all columns,
+and groups alarms less than 30 s apart into intervals. `simulate` writes
+a 10 Hz log in the same format. Defaults are the hard_iron.py "offset
+states" case. CSV at 6 significant figures changes the innovations by at
+most 0.003 sd against the in-memory arrays (seeds 0 and 4), same alarms.
+
+First clean log (seed 0) gave 3 alarms in 10 min, which looked far too
+many for ~0.5/h. Checked: the same filter on the arrays drawn in
+hard_iron.py's order gives the same alarms as the experiment (1 in 30
+seeds), and in the simulate subcommand's order 6 in 30 seeds (seeds 0, 4,
+7). Only the draw order differs, so this is seed luck: 7 alarms in 9.9 h,
+0.7/h. A 10 min clean log alarms now and then, so the output has to be
+read as trains of alarms, not single ones.
+
+0.1 m/s track-following drag, seed 0: first attack alarm at 84 s (24 s
+after onset), then 164 alarms to the end, almost all on the across
+column, in three intervals: the CUSUM goes quiet for 40 s and 94 s in
+between at a 30 s merge gap. 2 s per 10 min log.
+
+Correction: the 11-24 and 11-26 entries say 1.6 h of clean data per
+magnetometer case. It is 16.5 h (100 seeds x 595 s). HOW_IT_WORKS fixed.
