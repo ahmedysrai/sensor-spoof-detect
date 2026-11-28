@@ -160,6 +160,7 @@ python experiments/slow_drag.py         # about 4 min
 python experiments/gyro_offset.py       # about 12 min
 python experiments/magnetometer.py      # about 10 min
 python experiments/hard_iron.py         # about 14 min
+python experiments/hard_iron_prior.py   # about 18 min
 ```
 
 Seeds are fixed, so each script prints the same table every time. The
@@ -217,13 +218,22 @@ runs after a median 337, 59 and 18 s, and the forward offset estimate
 ends 0.42 uT low under the 0.05 m/s drag. The same filter on data with
 no offset gives the same numbers, so the cost is in carrying the states.
 
+A better calibration does not buy that back (`hard_iron_prior.py`).
+With the prior and the offset in the data both at 1 or 0.5 uT, the found
+fractions stay within 0.04 of the 2 uT case and the offset estimate is
+pulled by the same amount, about 8 uT per m/s of drag. The turns before
+the attack have already taught the filter the offset, so the prior only
+matters in the first half minute. A 0.5 uT prior on a 2 uT offset also
+learns it in time, at 0.7 false alarms an hour.
+
 ## Limits and what comes next
 
 - The hard-iron states rely on the turns in these runs (36 to 106 deg
   of heading change in 10 minutes on the seeds checked). A vehicle that
   drives straight would leave the offset and a heading error
-  indistinguishable. How much a tighter offset prior (a better
-  calibration) buys back is not measured yet.
+  indistinguishable. A tighter prior does not change the cost under a
+  drag; freezing the offset once it has settled is the next thing to
+  try.
 - The gyro offset walk sets how much a drag can hide in the offset, and
   my value is a guess. A temperature input would let it be much smaller.
 - The false alarm rates rest on 6.4 h of clean runs for the CUSUM

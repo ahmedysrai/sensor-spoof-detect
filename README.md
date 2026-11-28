@@ -41,8 +41,10 @@ after calibration, tilts the heading by about 4 degrees and the CUSUM then
 alarms thousands of times an hour on clean runs. Estimating that offset as
 two more filter states brings false alarms back to 0.5/h, at a price: the
 filter can explain part of a slow pull as offset, so 0.05 m/s is found on
-74 % of runs and 0.02 m/s on 25 %. Raising the magnetometer's noise figure
-instead still leaves 769 false alarms an hour. HOW_IT_WORKS.md explains
+74 % of runs and 0.02 m/s on 25 %. A tighter calibration (0.5 uT prior
+and offset) gives the same numbers, because the turns in the first minute
+teach the filter the offset whatever the prior was. Raising the
+magnetometer's noise figure instead still leaves 769 false alarms an hour. HOW_IT_WORKS.md explains
 the filters, the detectors and where the simulation flatters them;
 NOTES.md has the dated numbers.
 
@@ -58,6 +60,7 @@ python experiments/slow_drag.py         # about 4 min
 python experiments/gyro_offset.py       # about 12 min
 python experiments/magnetometer.py      # about 10 min
 python experiments/hard_iron.py         # about 14 min
+python experiments/hard_iron_prior.py   # about 18 min
 ```
 
 ## Check a log

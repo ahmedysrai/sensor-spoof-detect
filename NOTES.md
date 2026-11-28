@@ -449,3 +449,53 @@ between at a 30 s merge gap. 2 s per 10 min log.
 
 Correction: the 11-24 and 11-26 entries say 1.6 h of clean data per
 magnetometer case. It is 16.5 h (100 seeds x 595 s). HOW_IT_WORKS fixed.
+
+## 2026-11-28
+
+Tighter hard-iron prior (experiments/hard_iron_prior.py, 100 seeds,
+about 18 min). Prior sd and forward offset in the data shrink together,
+plus one mismatched case:
+
+```
+case                    rate m/s    FA/h  found  delay s      fwd err uT
+prior 2, offset 2           none     0.5                   -0.00 +- 0.02
+prior 2, offset 2           0.02           0.25    337.1   -0.16 +- 0.12
+prior 2, offset 2           0.05           0.74     58.7   -0.41 +- 0.30
+prior 2, offset 2           0.10           0.99     18.0   -0.81 +- 0.61
+prior 1, offset 1           none     0.5                   -0.00 +- 0.02
+prior 1, offset 1           0.02           0.28    286.9   -0.16 +- 0.12
+prior 1, offset 1           0.05           0.74     50.1   -0.41 +- 0.29
+prior 1, offset 1           0.10           0.99     18.0   -0.82 +- 0.59
+prior 0.5, offset 0.5       none     0.6                   -0.00 +- 0.02
+prior 0.5, offset 0.5       0.02           0.29    327.1   -0.17 +- 0.12
+prior 0.5, offset 0.5       0.05           0.74     48.9   -0.41 +- 0.29
+prior 0.5, offset 0.5       0.10           0.99     17.8   -0.82 +- 0.58
+prior 0.5, offset 2         none     0.7                   -0.00 +- 0.02
+prior 0.5, offset 2         0.02           0.27    327.0   -0.17 +- 0.12
+prior 0.5, offset 2         0.05           0.73     49.9   -0.41 +- 0.30
+prior 0.5, offset 2         0.10           1.00     17.5   -0.82 +- 0.60
+```
+
+The first block reproduces 11-26 (0.25 / 0.74 / 0.99, and the 0.42 uT
+low estimate under 0.05 m/s on 20 seeds, here 0.41 on 100). I expected the
+0.5 uT prior to move the result towards the calibrated magnetometer's
+0.97 / 1.00 / 1.00. It does not: found fractions stay within 0.04 and
+the delays within about 10 s, while the offset estimate is pulled by the
+same 0.16 / 0.41 / 0.82 uT in every case, about 8 uT per m/s.
+
+Why: by the time the attack starts the turns have already beaten the
+prior. Scratch check on 5 seeds, forward error on a clean run at 10 s /
+30 s / 60 s: prior 2 up to 1.22 / 0.44 / 0.21 uT, prior 0.5 up to
+0.57 / 0.21 / 0.08. So the prior only matters in the first half minute,
+and an attack that starts at 60 s meets a filter whose offset belief
+comes from the data either way. The mismatched case (0.5 uT prior, 2 uT
+real) also learns its offset before 60 s and only costs a little in
+false alarms (0.7/h, a handful of alarms in 16.5 h, can't separate it
+from 0.5).
+
+So a better calibration does not help against this attacker; what lets
+the drag in is that the offset state stays free to move after it has
+been learned. Next thing to try: freeze the offset (stop updating those
+states, or give them a floor that tightens with time) once it has
+settled, and see whether that recovers the calibrated-magnetometer
+numbers, and what it costs if the offset does change later.
